@@ -1,6 +1,6 @@
 {
   "name": "scoffers",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Scoffers — the Saunders Coffers. Household jars and what's-left budgeting for Liz and Adam.",
   "main": "server.js",
@@ -8,7 +8,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node tests/classify.test.mjs"
+    "test": "node tests/classify.test.mjs && node tests/whatsleft.test.mjs"
   },
   "engines": {
     "node": ">=20"

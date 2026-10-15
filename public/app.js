@@ -1,5 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, JAR_DEPOSIT_DAYS } from './config.js';
+import { whatsLeft, addDays } from './whatsleft.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true },
@@ -180,6 +181,89 @@ async function loadFundingRule() {
   return data;
 }
 
+/* ---------- what's left ---------- */
+
+function todayIso() {
+  const t = new Date();
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+}
+const fmtDay = (iso, opts = { month: 'short', day: 'numeric' }) => new Date(`${iso}T12:00:00`).toLocaleDateString('en-US', opts);
+
+async function loadSpending() {
+  const accounts = await loadAccounts();
+  const checking = accounts.find((a) => a.kind === 'checking');
+  if (!checking) return null;
+  const since = addDays(todayIso(), -60);
+  const [tx, pl, pm, cov] = await Promise.all([
+    sb.from('transactions').select('id, amount, date, name, pending, kind, needs_review').eq('account_id', checking.id).gte('date', since).order('date', { ascending: false }),
+    sb.from('planned_items').select('*').eq('archived', false).order('due_date'),
+    sb.from('planned_matches').select('planned_item_id, occurrence_date, transaction_id, status'),
+    sb.from('jar_coverage').select('withdrawal_transaction_id, charge_transaction_id, amount'),
+  ]);
+  for (const r of [tx, pl, pm, cov]) if (r.error) throw r.error;
+  const txns = tx.data.map((t) => ({ ...t, amount: Number(t.amount) }));
+  const hasBalance = checking.current_balance != null;
+  const w = whatsLeft({
+    today: todayIso(),
+    balance: Number(checking.current_balance || 0),
+    txns,
+    planned: pl.data,
+    matches: pm.data,
+    coverage: cov.data,
+  });
+  return { checking, hasBalance, linked: !!checking.plaid_account_id, txns, planned: pl.data, matches: pm.data, coverage: cov.data, w };
+}
+
+function donutSvg(w) {
+  const segs = [
+    { key: 'spent', value: w.spent, color: 'var(--seg-spent)' },
+    { key: 'pending', value: w.pending, color: 'var(--seg-pending)' },
+    { key: 'planned', value: w.planned + w.waiting, color: 'var(--seg-planned)' },
+    { key: 'left', value: w.left, color: 'var(--seg-left)' },
+  ];
+  const total = segs.reduce((s, x) => s + x.value, 0);
+  const R = 74, C = 2 * Math.PI * R, GAP = total > 0 ? 2 : 0;
+  let offset = 0;
+  const arcs = total > 0 ? segs.filter((s) => s.value > 0).map((s) => {
+    const len = Math.max(0, (s.value / total) * C - GAP);
+    const a = `<circle cx="90" cy="90" r="${R}" fill="none" stroke="${s.color}" stroke-width="20"
+      stroke-dasharray="${len.toFixed(2)} ${(C - len).toFixed(2)}" stroke-dashoffset="${(-offset).toFixed(2)}" transform="rotate(-90 90 90)"/>`;
+    offset += (s.value / total) * C;
+    return a;
+  }).join('') : '';
+  const over = w.over > 0;
+  return `
+    <svg viewBox="0 0 180 180" class="donut" role="img" aria-label="What's left: ${money(w.whatsLeft)}">
+      <circle cx="90" cy="90" r="${R}" fill="none" stroke="var(--bar-track)" stroke-width="20"/>
+      ${arcs}
+      <text x="90" y="86" text-anchor="middle" class="donut-num ${over ? 'is-over' : ''}">${over ? '−' : ''}${money(Math.abs(w.whatsLeft))}</text>
+      <text x="90" y="108" text-anchor="middle" class="donut-label">${over ? 'over' : 'left to spend'}</text>
+    </svg>`;
+}
+
+function whatsLeftCard(s) {
+  const { w } = s;
+  const p = w.period;
+  const legend = [
+    ['spent', 'Spent', w.spent],
+    ['pending', 'Pending', w.pending],
+    ['planned', w.waiting > 0 ? 'Planned & jar money' : 'Planned', w.planned + w.waiting],
+    ['left', 'Left', w.left],
+  ];
+  return `
+    <a class="card wl" href="#/spending">
+      <div class="row"><h3 style="font-size:18px">What's Left</h3>
+        <span class="muted small">${fmtDay(p.start)}–${fmtDay(p.end, { day: 'numeric' })} · ${p.daysLeft} day${p.daysLeft === 1 ? '' : 's'} left</span></div>
+      <div class="wl-body">
+        ${donutSvg(w)}
+        <div class="legend">
+          ${legend.map(([k, label, v]) => `<div class="lg"><i style="background:var(--seg-${k})"></i><span>${label}</span><b>${money(v)}</b></div>`).join('')}
+        </div>
+      </div>
+      <p class="muted small" style="margin:8px 0 0">${w.whatsLeft > 0 ? `About ${money(w.perDay)} a day.` : 'Nothing left for this period.'}${w.nextCommitted ? ` ${money(w.nextCommitted)} already planned for next period.` : ''}${s.linked ? '' : ' (Balance typed in by hand until the bank is connected.)'}</p>
+    </a>`;
+}
+
 /* ---------- jar status ---------- */
 
 function jarStatus(j) {
@@ -256,7 +340,7 @@ function renderLogin(message = '') {
 }
 
 async function renderHome() {
-  const [jars, accounts, rule, inboxCount] = await Promise.all([loadJars(), loadAccounts(), loadFundingRule(), countInbox()]);
+  const [jars, accounts, rule, inboxCount, spending] = await Promise.all([loadJars(), loadAccounts(), loadFundingRule(), countInbox(), loadSpending()]);
   const total = round2(jars.reduce((s, j) => s + j.balance, 0));
   const savings = accounts.find((a) => a.kind === 'savings');
   const linked = !!savings?.plaid_account_id;
@@ -290,6 +374,7 @@ async function renderHome() {
       <h1>Scoffers</h1>
       <div class="sub">the Saunders Coffers · hi, ${esc(me.display_name)}</div>
     </header>
+    ${spending?.hasBalance ? whatsLeftCard(spending) : ''}
     <section class="card hero">
       <div class="label">In the jars</div>
       <div class="big">${money(total)}</div>
@@ -297,10 +382,11 @@ async function renderHome() {
     </section>
     ${inboxBanner}
     ${recon}
+    ${spending?.hasBalance ? '' : `
     <section class="card">
-      <div class="row"><h3 style="font-size:18px">What's Left</h3><span class="pill plain">Coming soon</span></div>
-      <p class="muted small" style="margin:6px 0 0">Your variable-spend number for the pay period shows up here once Wells Fargo is connected.</p>
-    </section>
+      <div class="row"><h3 style="font-size:18px">What's Left</h3><span class="pill plain">Needs the bank</span></div>
+      <p class="muted small" style="margin:6px 0 0">Your variable-spend number for the pay period shows up here once Wells Fargo is connected in <a href="#/admin">Admin</a>.</p>
+    </section>`}
     <div class="row" style="margin:18px 0 10px"><h2 style="font-size:20px">Jars</h2><a href="#/jars" class="muted small">See all</a></div>
     ${jars.slice(0, 4).map(jarCard).join('')}
   `;
@@ -321,6 +407,148 @@ async function renderHome() {
   });
 }
 
+async function renderSpending() {
+  const s = await loadSpending();
+  if (!s?.hasBalance) {
+    $app.innerHTML = `<div class="page-title"><h1>Spending</h1></div>
+      <div class="card"><p class="muted" style="margin:0">Connect Wells Fargo in <a href="#/admin">Admin</a> to see what's left for the pay period.</p></div>`;
+    return;
+  }
+  const { w } = s;
+  const p = w.period;
+  const plannedRow = (x, next = false) => {
+    const status = x.paid ? '<span class="pill good">Paid ✓</span>' : x.overdue ? '<span class="pill warn">Overdue</span>' : next ? '<span class="pill plain">Next period</span>' : '<span class="pill gold">Held</span>';
+    return `
+      <button class="item planned-row" data-item="${x.item.id}" data-date="${x.date}" data-paid="${x.paid}">
+        <div style="min-width:0;text-align:left">
+          <div style="font-weight:600">${esc(x.item.name)} ${x.item.recurrence === 'monthly' ? '<span class="muted" title="Repeats monthly">↻</span>' : ''}</div>
+          <div class="muted small">${fmtDay(x.date, { weekday: 'short', month: 'short', day: 'numeric' })}${x.item.recurrence === 'monthly' && x.item.end_date ? ` · through ${fmtDay(x.item.end_date, { month: 'short', year: 'numeric' })}` : ''}</div>
+        </div>
+        <div style="text-align:right"><div class="amt-out">${money(x.amount)}</div>${status}</div>
+      </button>`;
+  };
+  const inPeriod = s.txns.filter((t) => t.pending || (t.date >= p.start && t.date <= p.end));
+  const covered = new Set(s.coverage.map((c) => c.charge_transaction_id));
+  const tag = (t) => t.pending ? '<span class="pill gold">Pending</span>'
+    : covered.has(t.id) ? '<span class="pill good">Jar paid</span>'
+    : t.kind === 'variable_deposit' ? '<span class="pill plain">Pay-period deposit</span>'
+    : t.kind === 'jar_withdrawal' ? '<span class="pill plain">From a jar</span>'
+    : t.kind === 'sweep' ? '<span class="pill plain">To savings</span>' : '';
+
+  $app.innerHTML = `
+    <div class="page-title"><h1>Spending</h1><span class="muted small">${fmtDay(p.start)}–${fmtDay(p.end, { day: 'numeric' })}</span></div>
+    ${whatsLeftCard(s)}
+    ${w.waiting > 0 ? `<a class="banner info" href="#/inbox" style="display:block;text-decoration:none">${money(w.waiting)} came over from a jar and is being held until you say what it paid for. Tap to link it.</a>` : ''}
+
+    <div class="row" style="margin:18px 0 8px"><h2 style="font-size:20px">Planned</h2>
+      <button class="btn" id="add-planned">＋ Planned item</button></div>
+    <section class="card history">
+      ${w.plannedList.length ? w.plannedList.map((x) => plannedRow(x)).join('') : '<p class="muted small" style="margin:0">Nothing planned this period. Add the toll bill, a camp payment, anything you know is coming.</p>'}
+    </section>
+    ${w.nextList.length ? `
+      <h3 style="font-size:16px;margin:14px 0 8px" class="muted">Next period · ${money(w.nextCommitted)} planned</h3>
+      <section class="card history">${w.nextList.map((x) => plannedRow(x, true)).join('')}</section>` : ''}
+
+    <h2 style="font-size:20px;margin:18px 0 8px">This period</h2>
+    <section class="card history">
+      ${inPeriod.length ? inPeriod.map((t) => `
+        <div class="item">
+          <div style="min-width:0">
+            <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.name)}</div>
+            <div class="muted small">${fmtDay(t.date)} ${tag(t)}</div>
+          </div>
+          <div class="${t.amount >= 0 ? 'amt-in' : 'amt-out'}">${t.amount >= 0 ? '+' : '−'}${money(Math.abs(t.amount))}</div>
+        </div>`).join('') : '<p class="muted small" style="margin:0">No transactions yet this period.</p>'}
+    </section>
+  `;
+
+  document.getElementById('add-planned').onclick = () => plannedSheet();
+  $app.querySelectorAll('.planned-row').forEach((b) => b.addEventListener('click', () => {
+    const item = s.planned.find((i) => i.id === b.dataset.item);
+    plannedActions(item, b.dataset.date, b.dataset.paid === 'true');
+  }));
+}
+
+function plannedSheet() {
+  const today = todayIso();
+  $sheet.innerHTML = `
+    <form class="inner">
+      <h2>Planned item</h2>
+      <p class="muted small" style="margin:-6px 0 12px">Money you know is coming out of checking. It's held from What's Left in the period it's due.</p>
+      <div class="field"><label for="p-name">What</label><input id="p-name" required placeholder="Toll bill" autocomplete="off"></div>
+      <div class="grid2 field">
+        <div><label for="p-amt">Amount</label><input id="p-amt" inputmode="decimal" required placeholder="$0.00"></div>
+        <div><label for="p-date">Due</label><input id="p-date" type="date" required value="${today}"></div>
+      </div>
+      <div class="field"><label class="check"><input type="checkbox" id="p-repeat"> Repeats monthly</label></div>
+      <div class="field" id="p-repeat-box" hidden><label for="p-count">How many payments?</label><input id="p-count" inputmode="numeric" value="3"></div>
+      <div class="field"><label for="p-hint">Shows on the bank as (optional)</label><input id="p-hint" placeholder="e.g. NTTA" autocomplete="off">
+        <p class="muted small" style="margin:4px 0 0">With this, Scoffers checks it off when a close amount posts. Without it, only an exact amount matches.</p></div>
+      <div class="error" id="p-err" hidden></div>
+      <div class="btns"><button class="btn" type="button" id="s-cancel">Cancel</button><button class="btn primary" type="submit">Add</button></div>
+    </form>`;
+  $sheet.showModal();
+  const $ = (id) => $sheet.querySelector(id);
+  $('#p-repeat').onchange = (e) => ($('#p-repeat-box').hidden = !e.target.checked);
+  $('#s-cancel').onclick = () => $sheet.close();
+  $sheet.querySelector('form').onsubmit = async (e) => {
+    e.preventDefault();
+    const err = $('#p-err');
+    const amount = parseAmount($('#p-amt').value);
+    const due = $('#p-date').value;
+    const monthly = $('#p-repeat').checked;
+    const count = parseInt($('#p-count').value, 10);
+    if (!(amount > 0)) { err.textContent = 'Enter an amount above $0.'; err.hidden = false; return; }
+    if (monthly && !(count >= 1 && count <= 120)) { err.textContent = 'Enter how many monthly payments (1–120).'; err.hidden = false; return; }
+    const checking = (await loadAccounts()).find((a) => a.kind === 'checking');
+    let end_date = null;
+    if (monthly) {
+      const [y, m, d] = due.split('-').map(Number);
+      const last = new Date(y, m - 1 + count - 1, 1);
+      const dim = new Date(last.getFullYear(), last.getMonth() + 1, 0).getDate();
+      end_date = `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(Math.min(d, dim)).padStart(2, '0')}`;
+    }
+    const { error } = await sb.from('planned_items').insert({
+      account_id: checking.id, name: $('#p-name').value.trim(), amount, due_date: due,
+      recurrence: monthly ? 'monthly' : 'one_time', end_date, merchant_hint: $('#p-hint').value.trim() || null,
+    });
+    if (error) { err.textContent = error.message; err.hidden = false; return; }
+    $sheet.close();
+    toast('Planned ✓');
+    route();
+  };
+  setTimeout(() => $('#p-name').focus(), 50);
+}
+
+function plannedActions(item, date, paid) {
+  $sheet.innerHTML = `
+    <div class="inner">
+      <h2>${esc(item.name)}</h2>
+      <p class="muted small" style="margin:-6px 0 14px">${money(item.amount)} due ${fmtDay(date, { weekday: 'long', month: 'long', day: 'numeric' })}${item.recurrence === 'monthly' ? ' · repeats monthly' : ''}</p>
+      <div class="stack">
+        ${paid ? `<button class="btn block" data-a="unpay">Mark as not paid</button>` : `
+          <button class="btn primary block" data-a="paid">Mark paid</button>
+          <button class="btn block" data-a="skip">Skip this one</button>`}
+        <button class="btn block" data-a="delete">Delete${item.recurrence === 'monthly' ? ' all payments' : ''}</button>
+        <button class="btn link block" data-a="close">Close</button>
+      </div>
+    </div>`;
+  $sheet.showModal();
+  $sheet.querySelectorAll('[data-a]').forEach((b) => b.addEventListener('click', async () => {
+    const a = b.dataset.a;
+    let error = null;
+    if (a === 'paid' || a === 'skip') ({ error } = await sb.from('planned_matches').insert({ planned_item_id: item.id, occurrence_date: date, status: a === 'paid' ? 'paid' : 'skipped' }));
+    if (a === 'unpay') ({ error } = await sb.from('planned_matches').delete().eq('planned_item_id', item.id).eq('occurrence_date', date));
+    if (a === 'delete') {
+      if (!confirm(`Delete ${item.name}?`)) return;
+      ({ error } = await sb.from('planned_items').update({ archived: true }).eq('id', item.id));
+    }
+    $sheet.close();
+    if (error) return fail(error);
+    if (a !== 'close') route();
+  }));
+}
+
 async function countInbox() {
   const { count, error } = await sb.from('transactions').select('id', { count: 'exact', head: true }).eq('needs_review', true);
   if (error) throw error;
@@ -336,6 +564,43 @@ async function renderInbox() {
   if (error) throw error;
   const kindOf = Object.fromEntries(accounts.map((a) => [a.id, a.kind]));
   const catchAll = jars.find((j) => j.is_catch_all);
+
+  // For jar money that landed in checking: recent charges it might have paid for.
+  const needsCover = txns.some((t) => kindOf[t.account_id] === 'checking' && t.kind === 'jar_withdrawal' && Number(t.amount) > 0);
+  let charges = [], coverage = [];
+  if (needsCover) {
+    const checking = accounts.find((a) => a.kind === 'checking');
+    const [ch, cv] = await Promise.all([
+      sb.from('transactions').select('id, amount, date, name').eq('account_id', checking.id).eq('pending', false).eq('kind', 'regular')
+        .lt('amount', 0).gte('date', addDays(todayIso(), -30)).order('date', { ascending: false }),
+      sb.from('jar_coverage').select('withdrawal_transaction_id, charge_transaction_id, amount'),
+    ]);
+    if (ch.error) throw ch.error;
+    if (cv.error) throw cv.error;
+    coverage = cv.data;
+    const usedOnCharge = {};
+    for (const c of coverage) usedOnCharge[c.charge_transaction_id] = (usedOnCharge[c.charge_transaction_id] || 0) + Number(c.amount);
+    charges = ch.data.map((c) => ({ ...c, open: round2(-Number(c.amount) - (usedOnCharge[c.id] || 0)) })).filter((c) => c.open > 0.004);
+  }
+  const remainingOf = (t) => round2(Number(t.amount) - coverage.filter((c) => c.withdrawal_transaction_id === t.id).reduce((s, c) => s + Number(c.amount), 0));
+  const coverCard = (t) => `
+    <form class="card inbox-item" data-id="${t.id}" data-mode="cover" data-remaining="${remainingOf(t)}">
+      <div class="row">
+        <div style="min-width:0"><div style="font-weight:600">${esc(t.name)}</div>
+          <div class="muted small">${shortDate(t.date + 'T12:00:00')} · Checking</div></div>
+        <div class="amt-in" style="font-size:18px">+${money(t.amount)}</div>
+      </div>
+      <p class="muted small" style="margin:10px 0 8px">Jar money arrived. Tick what it paid for so those charges don't come out of What's Left.${remainingOf(t) < Number(t.amount) ? ` ${money(remainingOf(t))} still unlinked.` : ''}</p>
+      <div class="checks">
+        ${charges.length ? charges.map((c) => `<label class="check"><input type="checkbox" name="charge" value="${c.id}" data-open="${c.open}">
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)} <span class="muted small">${shortDate(c.date + 'T12:00:00')}</span></span>
+          <b>${money(c.open)}</b></label>`).join('') : '<p class="muted small">No recent charges to link yet. Check back after it posts.</p>'}
+      </div>
+      <div class="grid2" style="margin-top:10px">
+        <button class="btn primary" type="submit" ${charges.length ? '' : 'disabled'}>Link</button>
+        <button class="btn" type="button" data-release>Just spending money</button>
+      </div>
+    </form>`;
   const opts = (sel) => jars.map((j) => `<option value="${j.id}" ${j.id === sel ? 'selected' : ''}>${esc(j.emoji || '')} ${esc(j.name)} (${money(j.balance)})</option>`).join('');
 
   const card = (t) => {
@@ -363,10 +628,36 @@ async function renderInbox() {
 
   $app.innerHTML = `
     <div class="page-title"><h1>Inbox</h1><span class="muted">${txns.length || ''}</span></div>
-    ${txns.length ? txns.map(card).join('') : `<div class="card" style="text-align:center"><div style="font-size:40px">🧘‍♀️</div><p class="muted">All sorted. Nothing needs a jar right now.</p></div>`}
+    ${txns.length ? txns.map((t) => (kindOf[t.account_id] === 'checking' && t.kind === 'jar_withdrawal' && Number(t.amount) > 0 ? coverCard(t) : card(t))).join('') : `<div class="card" style="text-align:center"><div style="font-size:40px">🧘‍♀️</div><p class="muted">All sorted. Nothing needs a jar right now.</p></div>`}
   `;
 
-  $app.querySelectorAll('form.inbox-item').forEach((f) => {
+  $app.querySelectorAll('form.inbox-item[data-mode=cover]').forEach((f) => {
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      let remaining = Number(f.dataset.remaining);
+      const rows = [];
+      for (const cb of f.querySelectorAll('[name=charge]:checked')) {
+        if (remaining <= 0.004) break;
+        const amt = round2(Math.min(Number(cb.dataset.open), remaining));
+        rows.push({ withdrawal_transaction_id: f.dataset.id, charge_transaction_id: cb.value, amount: amt });
+        remaining = round2(remaining - amt);
+      }
+      if (!rows.length) return toast('Tick at least one charge');
+      const { error } = await sb.from('jar_coverage').insert(rows);
+      if (error) return fail(error);
+      if (remaining <= 0.004) await sb.rpc('inbox_dismiss', { p_txn: f.dataset.id });
+      toast(remaining > 0.004 ? `Linked. ${money(remaining)} still waiting.` : 'Linked ✓');
+      route();
+    });
+    f.querySelector('[data-release]').addEventListener('click', async () => {
+      // Not tied to specific charges: it simply becomes spending money.
+      const { error } = await sb.from('transactions').update({ kind: 'other_transfer', needs_review: false }).eq('id', f.dataset.id);
+      if (error) return fail(error);
+      route();
+    });
+  });
+
+  $app.querySelectorAll('form.inbox-item:not([data-mode=cover])').forEach((f) => {
     f.addEventListener('submit', async (e) => {
       e.preventDefault();
       const jar = f.querySelector('[name=jar]')?.value;
@@ -788,6 +1079,7 @@ async function route() {
     else if (page === 'jar' && id) await renderJar(id);
     else if (page === 'admin') await renderAdmin();
     else if (page === 'inbox') await renderInbox();
+    else if (page === 'spending') await renderSpending();
     else await renderHome();
     window.scrollTo(0, 0);
   } catch (err) {

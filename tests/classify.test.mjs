@@ -20,7 +20,7 @@ assert.equal(c(0.42, '2026-11-30', 'INTEREST PAYMENT', 'savings').needsReview, t
 const w = c(-300, '2026-11-20', 'TRANSFER TO XXXXXX9486', 'savings');
 assert.equal(w.kind, 'jar_withdrawal'); assert.equal(w.needsReview, true);
 assert.equal(c(3033, '2026-11-01', 'ONLINE TRANSFER', 'checking').kind, 'variable_deposit');
-assert.equal(c(300, '2026-11-20', 'TRANSFER FROM XXXXXX0810', 'checking').kind, 'jar_withdrawal');
+{ const j = c(300, '2026-11-20', 'TRANSFER FROM XXXXXX0810', 'checking'); assert.equal(j.kind, 'jar_withdrawal'); assert.equal(j.needsReview, true); }
 assert.equal(c(-212.4, '2026-11-14', 'TRANSFER TO XXXXXX0810', 'checking').kind, 'sweep');
 assert.equal(c(-84.12, '2026-11-14', 'HEB #123', 'checking').kind, 'regular');
 
