@@ -159,8 +159,8 @@ details.card[open] > summary { margin-bottom: 12px; }
 @media (prefers-reduced-motion: reduce) { .splash .coin { animation: none; } }
 
 /* What's Left */
-:root { --seg-spent: #9aa39d; --seg-pending: #d9a43a; --seg-planned: #c9773b; --seg-left: #2f7a52; }
-@media (prefers-color-scheme: dark) { :root { --seg-spent: #6f7a74; --seg-pending: #e0b04a; --seg-planned: #e08a4f; --seg-left: #6cc796; } }
+:root { --seg-spent: #9aa39d; --seg-pending: #d9a43a; --seg-planned: #c9773b; --seg-left: #2f7a52; --seg-jar: #7d8fb3; }
+@media (prefers-color-scheme: dark) { :root { --seg-spent: #6f7a74; --seg-pending: #e0b04a; --seg-planned: #e08a4f; --seg-left: #6cc796; --seg-jar: #93a6cf; } }
 .wl { display: block; text-decoration: none; }
 .wl-body { display: grid; grid-template-columns: 168px 1fr; gap: 16px; align-items: center; margin-top: 8px; }
 .donut { width: 168px; height: 168px; display: block; }

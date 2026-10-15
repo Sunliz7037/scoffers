@@ -218,7 +218,8 @@ function donutSvg(w) {
   const segs = [
     { key: 'spent', value: w.spent, color: 'var(--seg-spent)' },
     { key: 'pending', value: w.pending, color: 'var(--seg-pending)' },
-    { key: 'planned', value: w.planned + w.waiting, color: 'var(--seg-planned)' },
+    { key: 'planned', value: w.planned, color: 'var(--seg-planned)' },
+    { key: 'jar', value: w.waiting, color: 'var(--seg-jar)' },
     { key: 'left', value: w.left, color: 'var(--seg-left)' },
   ];
   const total = segs.reduce((s, x) => s + x.value, 0);
@@ -247,7 +248,8 @@ function whatsLeftCard(s) {
   const legend = [
     ['spent', 'Spent', w.spent],
     ['pending', 'Pending', w.pending],
-    ['planned', w.waiting > 0 ? 'Planned & jar money' : 'Planned', w.planned + w.waiting],
+    ['planned', 'Planned', w.planned],
+    ...(w.waiting > 0 ? [['jar', 'Jar money to link', w.waiting]] : []),
     ['left', 'Left', w.left],
   ];
   return `

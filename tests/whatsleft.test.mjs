@@ -24,7 +24,8 @@ const base = {
     { id: 'heb', amount: -180, date: '2026-11-16', pending: false, kind: 'regular' },
     { id: 'old', amount: -99, date: '2026-11-10', pending: false, kind: 'regular' }, // last period: not "spent" now
     { id: 'pend', amount: -45.5, date: '2026-11-20', pending: true, kind: 'regular' },
-    { id: 'jarin', amount: 300, date: '2026-11-18', pending: false, kind: 'jar_withdrawal' },
+    { id: 'jarin', amount: 300, date: '2026-11-18', pending: false, kind: 'jar_withdrawal', needs_review: true },
+    { id: 'oldjar', amount: 450, date: '2026-10-02', pending: false, kind: 'jar_withdrawal', needs_review: false }, // settled history
     { id: 'soccer', amount: -300, date: '2026-11-18', pending: false, kind: 'regular' },
     { id: 'sweep', amount: -200, date: '2026-11-15', pending: false, kind: 'sweep' },
   ],
@@ -65,6 +66,11 @@ w = whatsLeft({ ...base, balance: 845.98, planned: [], txns: [
   { id: 'pd', amount: 3033, date: '2026-11-15', pending: true, kind: 'variable_deposit' },
   { id: 'pc', amount: -50.44, date: '2026-11-15', pending: true, kind: 'regular' }] });
 assert.equal(w.whatsLeft, 3828.54);
+// A pending jar transfer into checking doesn't raise What's Left.
+const wj = whatsLeft({ ...base, balance: 845.98, planned: [], txns: [
+  { id: 'pd', amount: 3033, date: '2026-11-15', pending: true, kind: 'variable_deposit' },
+  { id: 'pj', amount: 600, date: '2026-11-15', pending: true, kind: 'jar_withdrawal' }] });
+assert.equal(wj.whatsLeft, 3878.98);
 assert.equal(w.pending, 50.44);
 
 // Overspent shows as "over", not a negative slice.

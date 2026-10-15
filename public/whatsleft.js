@@ -65,16 +65,19 @@ export function whatsLeft({ today, balance, txns, planned, matches, coverage }) 
   // Pending transactions haven't hit the posted balance yet: charges come off, deposits go on
   // (the pay-period deposit often sits pending for a day).
   const pendingOut = r2(txns.filter((t) => t.pending && t.amount < 0).reduce((s, t) => s - t.amount, 0));
-  const pendingIn = r2(txns.filter((t) => t.pending && t.amount > 0).reduce((s, t) => s + t.amount, 0));
+  // Jar transfers are left out: jar money never changes What's Left.
+  const pendingIn = r2(txns.filter((t) => t.pending && t.amount > 0 && t.kind !== 'jar_withdrawal').reduce((s, t) => s + t.amount, 0));
 
   // Posted spending this period, minus anything a jar paid for.
   const spent = r2(txns
     .filter((t) => !t.pending && t.amount < 0 && t.kind === 'regular' && t.date >= p.start && t.date <= p.end)
     .reduce((s, t) => s + Math.max(0, -t.amount - (coveredByCharge[t.id] || 0)), 0));
 
-  // Money that came over from a jar and hasn't been matched to what it paid for.
+  // Jar money that arrived in checking and hasn't been matched to the charges it paid for.
+  // It's in the balance, so it's set aside here to keep What's Left untouched by jars.
+  // Only transfers still open in the Inbox count (history from before Scoffers is already settled).
   const waitingItems = txns
-    .filter((t) => !t.pending && t.amount > 0 && t.kind === 'jar_withdrawal' && t.date >= addDays(today, -45))
+    .filter((t) => !t.pending && t.amount > 0 && t.kind === 'jar_withdrawal' && t.needs_review)
     .map((t) => ({ id: t.id, remaining: r2(t.amount - (coveredByWithdrawal[t.id] || 0)) }))
     .filter((w) => w.remaining > 0.004);
   const waiting = r2(waitingItems.reduce((s, w) => s + w.remaining, 0));
