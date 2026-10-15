@@ -341,8 +341,8 @@ function renderLogin(message = '') {
   });
 }
 
-async function renderHome() {
-  const [jars, accounts, rule, inboxCount, spending] = await Promise.all([loadJars(), loadAccounts(), loadFundingRule(), countInbox(), loadSpending()]);
+// "In the jars" card + the check that jars match Joint Savings. Shown on the Jars page.
+function jarsSummary(jars, accounts, rule, inboxCount) {
   const total = round2(jars.reduce((s, j) => s + j.balance, 0));
   const savings = accounts.find((a) => a.kind === 'savings');
   const linked = !!savings?.plaid_account_id;
@@ -350,7 +350,6 @@ async function renderHome() {
   const bankBal = savings ? (savings.available_balance ?? savings.current_balance) : null;
   const next = nextDepositDate();
   const fundAmt = rule ? Number(rule.amount) : null;
-
   let recon = '';
   if (bankBal == null) {
     recon = `<div class="banner info">Connect Wells Fargo in <a href="#/admin">Admin</a> (or type in the Joint Savings balance) so Scoffers can check the jars match the bank.</div>`;
@@ -371,32 +370,14 @@ async function renderHome() {
         ${small ? `<div style="margin-top:8px"><button class="btn gold" id="trim">Take ${money(-diff)} from Loose Change to match</button></div>` : ''}</div>`;
     }
   }
-  const inboxBanner = inboxCount
-    ? `<a class="banner info" href="#/inbox" style="display:block;text-decoration:none">📬 ${inboxCount} ${inboxCount === 1 ? 'thing needs' : 'things need'} a jar. Tap to sort.</a>`
-    : '';
-
-  $app.innerHTML = `
-    <header class="masthead">
-      <h1>Scoffers</h1>
-      <div class="sub">the Saunders Coffers · hi, ${esc(me.display_name)}</div>
-    </header>
-    ${spending?.hasBalance ? whatsLeftCard(spending) : ''}
+  const html = `
     <section class="card hero">
       <div class="label">In the jars · Joint Savings …${esc(savings?.mask || '0810')}</div>
       <div class="big">${money(total)}</div>
-      <div class="meta">${jars.length} jars${next ? ` · next funding ${next.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}${linked ? ` · bank synced ${ago(savings.balance_updated_at)}` : ''}</div>
+      <div class="meta">${jars.length} jars${next ? ` · next ${rule ? money(rule.amount) + ' split' : 'funding'} ${next.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}` : ''}${linked ? ` · synced ${ago(savings.balance_updated_at)}` : ''}</div>
     </section>
-    ${inboxBanner}
-    ${recon}
-    ${spending?.hasBalance ? '' : `
-    <section class="card">
-      <div class="row"><h3 style="font-size:18px">What's Left</h3><span class="pill plain">Needs the bank</span></div>
-      <p class="muted small" style="margin:6px 0 0">Your variable-spend number for the pay period shows up here once Wells Fargo is connected in <a href="#/admin">Admin</a>.</p>
-    </section>`}
-    <div class="row" style="margin:18px 0 10px"><h2 style="font-size:20px">Jars</h2><a href="#/jars" class="muted small">See all</a></div>
-    ${jars.slice(0, 4).map(jarCard).join('')}
-  `;
-
+    ${recon}`;
+  const wire = () => {
   document.getElementById('sweep')?.addEventListener('click', async () => {
     const catchAll = jars.find((j) => j.is_catch_all);
     const diff = round2(Number(bankBal) - total);
@@ -419,6 +400,41 @@ async function renderHome() {
     toast(data === 'split' ? `${money(fundAmt)} split across the jars` : `${money(fundAmt)} added to Loose Change`);
     route();
   });
+  };
+  return { html, wire };
+}
+
+async function renderHome() {
+  const [jars, inboxCount, spending] = await Promise.all([loadJars(), countInbox(), loadSpending()]);
+  const total = round2(jars.reduce((s, j) => s + j.balance, 0));
+  const inboxBanner = inboxCount
+    ? `<a class="banner info" href="#/inbox" style="display:block;text-decoration:none">📬 ${inboxCount} ${inboxCount === 1 ? 'thing needs' : 'things need'} a look. Tap to sort.</a>`
+    : '';
+  let checkingHero = '';
+  if (spending?.hasBalance) {
+    const c = spending.checking, w = spending.w;
+    checkingHero = `
+      <a class="card hero" href="#/spending" style="display:block;text-decoration:none">
+        <div class="label">Checking · ${esc(c.name)} …${esc(c.mask)}</div>
+        <div class="big">${money(c.available_balance ?? c.current_balance)}</div>
+        <div class="meta">What's Left ${w.over > 0 ? `−${money(w.over)}` : money(w.whatsLeft)} · ${w.period.daysLeft} day${w.period.daysLeft === 1 ? '' : 's'} left${spending.linked ? ` · synced ${ago(c.balance_updated_at)}` : ''}</div>
+      </a>`;
+  }
+  $app.innerHTML = `
+    <header class="masthead">
+      <h1>Scoffers</h1>
+      <div class="sub">the Saunders Coffers · hi, ${esc(me.display_name)}</div>
+    </header>
+    ${checkingHero}
+    ${inboxBanner}
+    ${spending?.hasBalance ? whatsLeftCard(spending) : `
+    <section class="card">
+      <div class="row"><h3 style="font-size:18px">What's Left</h3><span class="pill plain">Needs the bank</span></div>
+      <p class="muted small" style="margin:6px 0 0">Your variable-spend number for the pay period shows up here once Wells Fargo is connected in <a href="#/admin">Admin</a>.</p>
+    </section>`}
+    <div class="row" style="margin:18px 0 10px"><h2 style="font-size:20px">Jars <span class="muted" style="font-family:Inter,sans-serif;font-size:15px;font-weight:500">${money(total)}</span></h2><a href="#/jars" class="muted small">See all</a></div>
+    ${jars.slice(0, 4).map(jarCard).join('')}
+  `;
 }
 
 async function renderSpending() {
@@ -572,7 +588,7 @@ async function countInbox() {
 async function renderInbox() {
   const [jars, { data: txns, error }, accounts] = await Promise.all([
     loadJars(),
-    sb.from('transactions').select('id, amount, date, name, kind, account_id').eq('needs_review', true).order('date', { ascending: false }),
+    sb.from('transactions').select('id, amount, date, name, kind, account_id, pending').eq('needs_review', true).order('date', { ascending: false }),
     loadAccounts(),
   ]);
   if (error) throw error;
@@ -585,7 +601,7 @@ async function renderInbox() {
   if (needsCover) {
     const checking = accounts.find((a) => a.kind === 'checking');
     const [ch, cv] = await Promise.all([
-      sb.from('transactions').select('id, amount, date, name').eq('account_id', checking.id).eq('pending', false).eq('kind', 'regular')
+      sb.from('transactions').select('id, amount, date, name, pending').eq('account_id', checking.id).eq('kind', 'regular')
         .lt('amount', 0).gte('date', addDays(todayIso(), -30)).order('date', { ascending: false }),
       sb.from('jar_coverage').select('withdrawal_transaction_id, charge_transaction_id, amount'),
     ]);
@@ -601,14 +617,14 @@ async function renderInbox() {
     <form class="card inbox-item" data-id="${t.id}" data-mode="cover" data-remaining="${remainingOf(t)}">
       <div class="row">
         <div style="min-width:0"><div style="font-weight:600">${esc(t.name)}</div>
-          <div class="muted small">${shortDate(t.date + 'T12:00:00')} · Checking</div></div>
+          <div class="muted small">${shortDate(t.date + 'T12:00:00')} · Checking${t.pending ? ' · pending' : ''}</div></div>
         <div class="amt-in" style="font-size:18px">+${money(t.amount)}</div>
       </div>
       <p class="muted small" style="margin:10px 0 8px">Jar money arrived. Tick what it paid for so those charges don't come out of What's Left.${remainingOf(t) < Number(t.amount) ? ` ${money(remainingOf(t))} still unlinked.` : ''}</p>
       <div class="checks">
         ${charges.length ? charges.map((c) => `<label class="check"><input type="checkbox" name="charge" value="${c.id}" data-open="${c.open}">
-          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)} <span class="muted small">${shortDate(c.date + 'T12:00:00')}</span></span>
-          <b>${money(c.open)}</b></label>`).join('') : '<p class="muted small">No recent charges to link yet. Check back after it posts.</p>'}
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(c.name)} <span class="muted small">${shortDate(c.date + 'T12:00:00')}${c.pending ? ' · pending' : ''}</span></span>
+          <b>${money(c.open)}</b></label>`).join('') : '<p class="muted small">No recent charges to link yet.</p>'}
       </div>
       <div class="grid2" style="margin-top:10px">
         <button class="btn primary" type="submit" ${charges.length ? '' : 'disabled'}>Link</button>
@@ -692,14 +708,14 @@ async function renderInbox() {
 }
 
 async function renderJars() {
-  const [jars, rule] = await Promise.all([loadJars(), loadFundingRule()]);
-  const total = round2(jars.reduce((s, j) => s + j.balance, 0));
-  const next = nextDepositDate();
+  const [jars, accounts, rule, inboxCount] = await Promise.all([loadJars(), loadAccounts(), loadFundingRule(), countInbox()]);
+  const summary = jarsSummary(jars, accounts, rule, inboxCount);
   $app.innerHTML = `
-    <div class="page-title"><h1>Jars</h1><span class="muted">${money(total)}</span></div>
-    ${rule && next ? `<p class="muted small" style="margin:-8px 0 14px">Next ${money(rule.amount)} split: ${next.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}</p>` : ''}
+    <div class="page-title"><h1>Jars</h1></div>
+    ${summary.html}
     ${jars.map(jarCard).join('')}
   `;
+  summary.wire();
 }
 
 async function renderJar(id) {

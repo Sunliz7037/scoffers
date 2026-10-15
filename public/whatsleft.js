@@ -61,10 +61,11 @@ export function whatsLeft({ today, balance, txns, planned, matches, coverage }) 
     coveredByCharge[c.charge_transaction_id] = (coveredByCharge[c.charge_transaction_id] || 0) + Number(c.amount);
     coveredByWithdrawal[c.withdrawal_transaction_id] = (coveredByWithdrawal[c.withdrawal_transaction_id] || 0) + Number(c.amount);
   }
+  const pendingOut = r2(txns.filter((t) => t.pending && t.amount < 0).reduce((s, t) => s + Math.max(0, -t.amount - (coveredByCharge[t.id] || 0)), 0));
 
   // Pending transactions haven't hit the posted balance yet: charges come off, deposits go on
   // (the pay-period deposit often sits pending for a day).
-  const pendingOut = r2(txns.filter((t) => t.pending && t.amount < 0).reduce((s, t) => s - t.amount, 0));
+  // (A pending charge already linked to jar money only counts for the part the jar didn't cover.)
   // Jar transfers are left out: jar money never changes What's Left.
   const pendingIn = r2(txns.filter((t) => t.pending && t.amount > 0 && t.kind !== 'jar_withdrawal').reduce((s, t) => s + t.amount, 0));
 

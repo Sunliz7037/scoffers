@@ -1,6 +1,6 @@
 // Minimal service worker: makes Scoffers installable and opens fast.
 // Only the app shell is cached; money data always comes live from the database.
-const CACHE = 'scoffers-shell-v5';
+const CACHE = 'scoffers-shell-v6';
 const SHELL = ['/', '/index.html', '/styles.css', '/app.js', '/config.js', '/whatsleft.js', '/manifest.webmanifest', '/icons/icon-192.png'];
 
 self.addEventListener('install', (e) => {

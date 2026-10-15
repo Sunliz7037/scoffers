@@ -73,6 +73,15 @@ const wj = whatsLeft({ ...base, balance: 845.98, planned: [], txns: [
 assert.equal(wj.whatsLeft, 3878.98);
 assert.equal(w.pending, 50.44);
 
+// Linking while both are pending: the $600 kid transfer covers $600 of the $605 Zeffy charge.
+const wz = whatsLeft({ ...base, balance: 845.98, planned: [], txns: [
+  { id: 'pd', amount: 3033, date: '2026-11-15', pending: true, kind: 'variable_deposit' },
+  { id: 'pj', amount: 600, date: '2026-11-15', pending: true, kind: 'jar_withdrawal', needs_review: false },
+  { id: 'zf', amount: -605, date: '2026-11-15', pending: true, kind: 'regular' }],
+  coverage: [{ withdrawal_transaction_id: 'pj', charge_transaction_id: 'zf', amount: 600 }] });
+assert.equal(wz.pending, 5);
+assert.equal(wz.whatsLeft, 3873.98); // 845.98 + 3033 − 5: the jar paid the rest
+
 // Overspent shows as "over", not a negative slice.
 w = whatsLeft({ ...base, balance: 100, planned: [], txns: [] });
 assert.equal(w.whatsLeft, 100);
