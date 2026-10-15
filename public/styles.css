@@ -143,6 +143,9 @@ details.card[open] > summary { margin-bottom: 12px; }
 .tabs a { flex: 1; max-width: 160px; text-decoration: none; display: flex; flex-direction: column; align-items: center; gap: 2px; font-size: 12px; font-weight: 600; color: var(--ink-2); padding: 6px; border-radius: 12px; }
 .tabs a span { font-size: 22px; line-height: 1; }
 .tabs a.active { color: var(--ink); background: var(--surface-2); }
+.tabs a.has-badge { position: relative; }
+.tabs a [data-badge] { position: absolute; top: 2px; left: calc(50% + 8px); min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--gold); color: #1d1608; font-size: 11px; line-height: 18px; text-align: center; }
+.tabs a [data-badge][hidden] { display: none; }
 
 /* Sheet (bottom dialog) */
 .sheet { border: 0; padding: 0; margin: auto auto 0; width: 100%; max-width: 560px; background: var(--surface); color: var(--ink); border-radius: 22px 22px 0 0; }

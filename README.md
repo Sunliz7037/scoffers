@@ -34,6 +34,29 @@ npm start        # http://localhost:3000
 2. Start command: `npm start`. Node 20 or newer.
 3. Point it at a domain or subdomain (for example `scoffers.yourdomain.com`), with SSL on.
 
-No secrets are needed in Phase 1. The Supabase publishable key in `public/config.js` is meant to be public; row-level security keeps the data private.
+The Supabase publishable key in `public/config.js` is meant to be public; row-level security keeps the data private.
 
-In Phase 2, Plaid keys go into SiteGround's environment settings, **never** into this repo.
+### Environment variables (SiteGround → Node.js → Environment Variables; never in this repo)
+
+| Key | What |
+|---|---|
+| `PLAID_CLIENT_ID` | Plaid client id |
+| `PLAID_SECRET` | Plaid Production secret (the Trial runs on Production) |
+| `PLAID_ENV` | `production` |
+| `SUPABASE_URL` | `https://gkbgqtxkewfekkjspdau.supabase.co` |
+| `SUPABASE_SECRET_KEY` | Supabase secret key (`sb_secret_…`), server only |
+| `TOKEN_ENCRYPTION_KEY` | 40+ random characters; encrypts the stored Plaid token |
+| `APP_URL` | `https://bestdaysolutions.com` |
+
+Plaid's dashboard needs `https://bestdaysolutions.com/oauth` as an allowed redirect URI.
+
+## Bank feed (Phase 2)
+
+- Wells Fargo connects read-only through Plaid. Accounts are matched by last four digits (…0810, …9486); any others are ignored.
+- Updates arrive by Plaid webhook (`/api/plaid/webhook`), with a sync every 4 hours as a safety net and a **Sync now** button in Admin.
+- Jar rules start the day after the bank is connected, so history already counted from Simplifi is never split twice.
+  - $1,380 into Joint Savings within 3 days of the 5th or 15th → split across jars.
+  - Money from checking (…9486) → Loose Change.
+  - Anything else in → Loose Change, flagged in the Inbox.
+  - Anything out of Joint Savings → the Inbox asks which jar paid.
+- `npm test` runs the matching-rule tests.

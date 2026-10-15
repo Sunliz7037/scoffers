@@ -1,18 +1,21 @@
 {
   "name": "scoffers",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "Scoffers — the Saunders Coffers. Household jars and what's-left budgeting for Liz and Adam.",
   "main": "server.js",
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "test": "node tests/classify.test.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "express": "^4.21.2"
+    "@supabase/supabase-js": "^2.118.0",
+    "express": "^4.21.2",
+    "plaid": "^48.0.0"
   }
 }

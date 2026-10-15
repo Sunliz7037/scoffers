@@ -76,6 +76,81 @@ function fail(err) {
   toast(err?.message || 'Something went wrong');
 }
 
+/* ---------- server (bank) ---------- */
+
+async function api(path, body) {
+  const { data } = await sb.auth.getSession();
+  const res = await fetch(`/api/plaid${path}`, {
+    method: body ? 'POST' : 'GET',
+    headers: { Authorization: `Bearer ${data.session?.access_token || ''}`, 'Content-Type': 'application/json' },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(json.error || `Server error (${res.status})`);
+  return json;
+}
+
+function loadPlaidScript() {
+  if (window.Plaid) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.plaid.com/link/v2/stable/link-initialize.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error("Couldn't load the bank connector"));
+    document.head.appendChild(s);
+  });
+}
+
+function plaidHandlers(mode) {
+  return {
+    onSuccess: async (public_token, metadata) => {
+      try {
+        toast(mode === 'update' ? 'Reconnected, syncing…' : 'Connected, pulling transactions…');
+        if (mode === 'update') await api('/sync', {});
+        else {
+          const r = await api('/exchange', { public_token, institution: metadata?.institution?.name });
+          toast(r.matched?.length ? `Linked ${r.matched.join(' and ')}` : 'Connected, but no matching accounts');
+        }
+      } catch (e) { fail(e); }
+      try { localStorage.removeItem('scoffers_link'); } catch {}
+      location.hash = '#/admin';
+      route();
+    },
+    onExit: (err) => { if (err) toast(err.display_message || err.error_message || 'Bank connection closed'); },
+  };
+}
+
+async function openPlaid(mode = 'new') {
+  try {
+    await loadPlaidScript();
+    const { link_token } = await api('/link-token', { mode });
+    // Wells Fargo signs in on its own site and sends you back to /oauth; keep the token for that trip.
+    try { localStorage.setItem('scoffers_link', JSON.stringify({ token: link_token, mode })); } catch {}
+    window.Plaid.create({ token: link_token, ...plaidHandlers(mode) }).open();
+  } catch (e) { fail(e); }
+}
+
+async function resumePlaidOAuth() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem('scoffers_link') || 'null'); } catch {}
+  const receivedRedirectUri = location.href;
+  history.replaceState(null, '', '/#/admin');
+  if (!saved?.token) return toast('Bank sign-in came back, but this browser lost track of it. Try Connect again.');
+  try {
+    await loadPlaidScript();
+    window.Plaid.create({ token: saved.token, receivedRedirectUri, ...plaidHandlers(saved.mode) }).open();
+  } catch (e) { fail(e); }
+}
+
+const ago = (ts) => {
+  if (!ts) return 'never';
+  const m = Math.round((Date.now() - new Date(ts)) / 60000);
+  if (m < 1) return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  return h < 24 ? `${h} hr ago` : shortDate(ts);
+};
+
 /* ---------- data ---------- */
 
 async function loadJars() {
@@ -181,25 +256,34 @@ function renderLogin(message = '') {
 }
 
 async function renderHome() {
-  const [jars, accounts] = await Promise.all([loadJars(), loadAccounts()]);
+  const [jars, accounts, rule, inboxCount] = await Promise.all([loadJars(), loadAccounts(), loadFundingRule(), countInbox()]);
   const total = round2(jars.reduce((s, j) => s + j.balance, 0));
   const savings = accounts.find((a) => a.kind === 'savings');
+  const linked = !!savings?.plaid_account_id;
   const next = nextDepositDate();
+  const fundAmt = rule ? Number(rule.amount) : null;
 
   let recon = '';
   if (savings?.current_balance == null) {
-    recon = `<div class="banner info">Add your Joint Savings balance in <a href="#/admin">Admin</a> to check the jars match Wells Fargo. The bank feed will do this automatically.</div>`;
+    recon = `<div class="banner info">Connect Wells Fargo in <a href="#/admin">Admin</a> (or type in the Joint Savings balance) so Scoffers can check the jars match the bank.</div>`;
   } else {
     const diff = round2(Number(savings.current_balance) - total);
     if (Math.abs(diff) < 0.005) {
       recon = `<div class="banner ok">✓ Jars match Wells Fargo to the penny.</div>`;
     } else if (diff > 0) {
+      const looksLikeFunding = fundAmt != null && Math.abs(diff - fundAmt) < 0.005;
       recon = `<div class="banner warn">Wells Fargo shows ${money(savings.current_balance)}; the jars hold ${money(total)}. ${money(diff)} isn't in a jar yet.
-        <div style="margin-top:8px"><button class="btn gold" id="sweep">Put ${money(diff)} in Loose Change</button></div></div>`;
+        <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
+          ${looksLikeFunding ? `<button class="btn gold" id="split-gap">Split ${money(diff)} across the jars</button>` : ''}
+          <button class="btn ${looksLikeFunding ? '' : 'gold'}" id="sweep">Put it in Loose Change</button>
+        </div></div>`;
     } else {
-      recon = `<div class="banner warn">The jars hold ${money(-diff)} more than Wells Fargo shows. A withdrawal probably still needs a jar.</div>`;
+      recon = `<div class="banner warn">The jars hold ${money(-diff)} more than Wells Fargo shows. ${inboxCount ? `Check the <a href="#/inbox">Inbox</a>: a withdrawal probably still needs a jar.` : 'A withdrawal probably still needs a jar.'}</div>`;
     }
   }
+  const inboxBanner = inboxCount
+    ? `<a class="banner info" href="#/inbox" style="display:block;text-decoration:none">📬 ${inboxCount} ${inboxCount === 1 ? 'thing needs' : 'things need'} a jar. Tap to sort.</a>`
+    : '';
 
   $app.innerHTML = `
     <header class="masthead">
@@ -209,8 +293,9 @@ async function renderHome() {
     <section class="card hero">
       <div class="label">In the jars</div>
       <div class="big">${money(total)}</div>
-      <div class="meta">${jars.length} jars${next ? ` · next funding ${next.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}</div>
+      <div class="meta">${jars.length} jars${next ? ` · next funding ${next.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}${linked ? ` · bank synced ${ago(savings.balance_updated_at)}` : ''}</div>
     </section>
+    ${inboxBanner}
     ${recon}
     <section class="card">
       <div class="row"><h3 style="font-size:18px">What's Left</h3><span class="pill plain">Coming soon</span></div>
@@ -227,6 +312,77 @@ async function renderHome() {
     if (error) return fail(error);
     toast(`${money(diff)} added to ${catchAll.name}`);
     route();
+  });
+  document.getElementById('split-gap')?.addEventListener('click', async () => {
+    const { data, error } = await sb.rpc('jar_record_deposit', { p_amount: fundAmt, p_note: 'Jar funding (matched to bank)' });
+    if (error) return fail(error);
+    toast(data === 'split' ? `${money(fundAmt)} split across the jars` : `${money(fundAmt)} added to Loose Change`);
+    route();
+  });
+}
+
+async function countInbox() {
+  const { count, error } = await sb.from('transactions').select('id', { count: 'exact', head: true }).eq('needs_review', true);
+  if (error) throw error;
+  return count || 0;
+}
+
+async function renderInbox() {
+  const [jars, { data: txns, error }, accounts] = await Promise.all([
+    loadJars(),
+    sb.from('transactions').select('id, amount, date, name, kind, account_id').eq('needs_review', true).order('date', { ascending: false }),
+    loadAccounts(),
+  ]);
+  if (error) throw error;
+  const kindOf = Object.fromEntries(accounts.map((a) => [a.id, a.kind]));
+  const catchAll = jars.find((j) => j.is_catch_all);
+  const opts = (sel) => jars.map((j) => `<option value="${j.id}" ${j.id === sel ? 'selected' : ''}>${esc(j.emoji || '')} ${esc(j.name)} (${money(j.balance)})</option>`).join('');
+
+  const card = (t) => {
+    const out = Number(t.amount) < 0;
+    const isSavings = kindOf[t.account_id] === 'savings';
+    let question, button, sel;
+    if (isSavings && out) { question = 'Left Joint Savings. Which jar paid for it?'; button = 'Take from jar'; sel = null; }
+    else if (isSavings) { question = `Landed in ${catchAll.name}. Want it in a jar?`; button = 'Label it'; sel = catchAll.id; }
+    else { question = 'Needs a look.'; button = null; }
+    return `
+      <form class="card inbox-item" data-id="${t.id}" data-mode="${isSavings && out ? 'withdrawal' : isSavings ? 'deposit' : 'other'}">
+        <div class="row">
+          <div style="min-width:0"><div style="font-weight:600;overflow:hidden;text-overflow:ellipsis">${esc(t.name)}</div>
+            <div class="muted small">${shortDate(t.date + 'T12:00:00')} · ${isSavings ? 'Joint Savings' : 'Checking'}</div></div>
+          <div class="${out ? 'amt-out' : 'amt-in'}" style="font-size:18px">${out ? '−' : '+'}${money(Math.abs(t.amount))}</div>
+        </div>
+        <p class="muted small" style="margin:10px 0 8px">${question}</p>
+        ${button ? `<div class="field"><select name="jar">${out ? '<option value="" disabled selected>Pick a jar…</option>' : ''}${opts(sel)}</select></div>` : ''}
+        <div class="grid2">
+          ${button ? `<button class="btn primary" type="submit">${button}</button>` : ''}
+          <button class="btn" type="button" data-dismiss>${button ? 'Not a jar thing' : 'Got it'}</button>
+        </div>
+      </form>`;
+  };
+
+  $app.innerHTML = `
+    <div class="page-title"><h1>Inbox</h1><span class="muted">${txns.length || ''}</span></div>
+    ${txns.length ? txns.map(card).join('') : `<div class="card" style="text-align:center"><div style="font-size:40px">🧘‍♀️</div><p class="muted">All sorted. Nothing needs a jar right now.</p></div>`}
+  `;
+
+  $app.querySelectorAll('form.inbox-item').forEach((f) => {
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const jar = f.querySelector('[name=jar]')?.value;
+      if (!jar) return toast('Pick a jar first');
+      const fn = f.dataset.mode === 'withdrawal' ? 'inbox_assign_withdrawal' : 'inbox_label_deposit';
+      const { error } = await sb.rpc(fn, { p_txn: f.dataset.id, p_jar: jar });
+      if (error) return fail(error);
+      toast('Sorted ✓');
+      route();
+    });
+    f.querySelector('[data-dismiss]').addEventListener('click', async () => {
+      if (f.dataset.mode === 'withdrawal' && !confirm('Skip assigning a jar? The jars will stop matching the bank by this amount.')) return;
+      const { error } = await sb.rpc('inbox_dismiss', { p_txn: f.dataset.id });
+      if (error) return fail(error);
+      route();
+    });
   });
 }
 
@@ -374,14 +530,17 @@ async function renderAdmin() {
     ${jars.map((j) => jarEditor(j)).join('')}
     <button class="btn block" id="add-jar" style="margin-bottom:24px">＋ New jar</button>
 
-    <h2 style="font-size:20px;margin:0 0 10px">Wells Fargo balance</h2>
+    <h2 style="font-size:20px;margin:0 0 10px">Wells Fargo</h2>
+    <section class="card" id="bank"><p class="muted small" style="margin:0">Checking the bank connection…</p></section>
+
+    ${savings?.plaid_account_id ? '' : `
     <form class="card" id="bal-form">
       <p class="muted small" style="margin:0 0 10px">Until the bank feed is connected, enter the Joint Savings balance so Scoffers can check the jars add up.</p>
       <div class="field"><label for="bal">Joint Savings …${esc(savings?.mask || '')}</label>
         <input id="bal" inputmode="decimal" value="${savings?.current_balance ?? ''}" placeholder="$0.00"></div>
       <button class="btn primary block" type="submit">Save balance</button>
       ${savings?.balance_updated_at ? `<p class="muted small" style="margin:8px 0 0">Last updated ${shortDate(savings.balance_updated_at)}</p>` : ''}
-    </form>
+    </form>`}
 
     <h2 style="font-size:20px;margin:20px 0 10px">Record a jar deposit by hand</h2>
     <form class="card" id="dep-form">
@@ -399,7 +558,10 @@ async function renderAdmin() {
   $app.querySelectorAll('form.jar-edit').forEach(wireJarEditor);
   document.getElementById('add-jar').onclick = () => newJarSheet(jars.length);
 
-  document.getElementById('bal-form').onsubmit = async (e) => {
+  renderBankSection();
+
+  const balForm = document.getElementById('bal-form');
+  if (balForm) balForm.onsubmit = async (e) => {
     e.preventDefault();
     const v = parseAmount(document.getElementById('bal').value);
     if (!Number.isFinite(v)) return toast('Enter the balance as a number');
@@ -421,6 +583,55 @@ async function renderAdmin() {
   };
 
   document.getElementById('signout').onclick = () => sb.auth.signOut();
+}
+
+async function renderBankSection() {
+  const el = document.getElementById('bank');
+  if (!el) return;
+  let status;
+  try {
+    status = await api('/status');
+  } catch (e) {
+    el.innerHTML = `<p class="small" style="margin:0">${esc(e.message)}</p>`;
+    return;
+  }
+  const item = status.items[0];
+  const isPhoneApp = window.matchMedia('(display-mode: standalone)').matches;
+  if (!item) {
+    el.innerHTML = `
+      <p class="muted small" style="margin:0 0 10px">Read-only connection through Plaid. Scoffers can see balances and transactions; it can't move money.</p>
+      ${isPhoneApp ? `<div class="banner info" style="margin-bottom:10px">Tip: connect from a computer browser. Bank sign-ins can get lost inside home-screen apps.</div>` : ''}
+      <button class="btn primary block" id="connect">Connect Wells Fargo</button>`;
+    el.querySelector('#connect').onclick = () => openPlaid('new');
+    return;
+  }
+  const needsLogin = item.status === 'login_required';
+  const errored = item.status && item.status.startsWith('error');
+  el.innerHTML = `
+    ${needsLogin ? `<div class="banner warn">Wells Fargo needs you to sign in again.</div>` : ''}
+    ${errored ? `<div class="banner warn">Last sync hit a problem: ${esc(item.status.replace(/^error: /, ''))}</div>` : ''}
+    ${status.accounts.map((a) => `
+      <div class="row" style="padding:6px 0">
+        <span>${a.linked ? '✓' : '○'} ${esc(a.name)} …${esc(a.mask)}</span>
+        <span class="muted">${a.linked && a.current_balance != null ? money(a.kind === 'checking' ? a.available_balance ?? a.current_balance : a.current_balance) : 'not linked'}</span>
+      </div>`).join('')}
+    <p class="muted small" style="margin:6px 0 10px">Last sync ${ago(item.updated_at)}. New transactions also arrive on their own.</p>
+    <div class="grid2">
+      <button class="btn primary" id="sync">Sync now</button>
+      <button class="btn" id="reconnect">${needsLogin ? 'Sign in again' : 'Reconnect'}</button>
+    </div>`;
+  el.querySelector('#sync').onclick = async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'Syncing…';
+    try {
+      const { results } = await api('/sync', {});
+      const r = results[0] || {};
+      if (r.error) throw new Error(r.error);
+      toast(r.added ? `${r.added} new transaction${r.added === 1 ? '' : 's'}` : 'Up to date');
+    } catch (err) { fail(err); }
+    route();
+  };
+  el.querySelector('#reconnect').onclick = () => openPlaid('update');
 }
 
 function jarEditor(j) {
@@ -563,6 +774,12 @@ async function route() {
     }
   }
   $tabs.hidden = false;
+  if (location.pathname === '/oauth') resumePlaidOAuth();
+  countInbox().then((n) => {
+    const badge = $tabs.querySelector('[data-badge]');
+    badge.textContent = n > 9 ? '9+' : String(n);
+    badge.hidden = !n;
+  }).catch(() => {});
   const [, page, id] = (location.hash || '#/home').split('/');
   const tab = page === 'jar' ? 'jars' : page || 'home';
   $tabs.querySelectorAll('a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
@@ -570,6 +787,7 @@ async function route() {
     if (page === 'jars') await renderJars();
     else if (page === 'jar' && id) await renderJar(id);
     else if (page === 'admin') await renderAdmin();
+    else if (page === 'inbox') await renderInbox();
     else await renderHome();
     window.scrollTo(0, 0);
   } catch (err) {
