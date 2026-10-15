@@ -60,6 +60,13 @@ w = whatsLeft({ ...base, today: '2026-12-08', planned: [toll] });
 assert.equal(w.plannedList[0].overdue, true);
 assert.equal(w.planned, 42.1);
 
+// A pending deposit (the pay-period transfer before it posts) counts as money in.
+w = whatsLeft({ ...base, balance: 845.98, planned: [], txns: [
+  { id: 'pd', amount: 3033, date: '2026-11-15', pending: true, kind: 'variable_deposit' },
+  { id: 'pc', amount: -50.44, date: '2026-11-15', pending: true, kind: 'regular' }] });
+assert.equal(w.whatsLeft, 3828.54);
+assert.equal(w.pending, 50.44);
+
 // Overspent shows as "over", not a negative slice.
 w = whatsLeft({ ...base, balance: 100, planned: [], txns: [] });
 assert.equal(w.whatsLeft, 100);

@@ -46,7 +46,7 @@ export function occurrences(item, from, to) {
 
 /**
  * @param o.today        'YYYY-MM-DD'
- * @param o.balance      checking current (posted) balance
+ * @param o.balance      checking current (posted) balance; pending items are applied on top
  * @param o.txns         checking transactions (recent ~60 days): { id, amount, date, pending, kind }
  * @param o.planned      planned_items (not archived)
  * @param o.matches      planned_matches: { planned_item_id, occurrence_date }
@@ -62,8 +62,10 @@ export function whatsLeft({ today, balance, txns, planned, matches, coverage }) 
     coveredByWithdrawal[c.withdrawal_transaction_id] = (coveredByWithdrawal[c.withdrawal_transaction_id] || 0) + Number(c.amount);
   }
 
-  // Pending charges haven't hit the posted balance yet.
+  // Pending transactions haven't hit the posted balance yet: charges come off, deposits go on
+  // (the pay-period deposit often sits pending for a day).
   const pendingOut = r2(txns.filter((t) => t.pending && t.amount < 0).reduce((s, t) => s - t.amount, 0));
+  const pendingIn = r2(txns.filter((t) => t.pending && t.amount > 0).reduce((s, t) => s + t.amount, 0));
 
   // Posted spending this period, minus anything a jar paid for.
   const spent = r2(txns
@@ -94,7 +96,7 @@ export function whatsLeft({ today, balance, txns, planned, matches, coverage }) 
   const plannedHeld = r2(plannedList.filter((x) => !x.paid).reduce((s, x) => s + x.amount, 0));
   const nextCommitted = r2(nextList.filter((x) => !x.paid).reduce((s, x) => s + x.amount, 0));
 
-  const value = r2(Number(balance) - pendingOut - plannedHeld - waiting);
+  const value = r2(Number(balance) + pendingIn - pendingOut - plannedHeld - waiting);
   return {
     period: p,
     whatsLeft: value,

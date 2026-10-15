@@ -344,25 +344,29 @@ async function renderHome() {
   const total = round2(jars.reduce((s, j) => s + j.balance, 0));
   const savings = accounts.find((a) => a.kind === 'savings');
   const linked = !!savings?.plaid_account_id;
+  // Wells Fargo's "available" includes today's pending transfers, which the jars already count.
+  const bankBal = savings ? (savings.available_balance ?? savings.current_balance) : null;
   const next = nextDepositDate();
   const fundAmt = rule ? Number(rule.amount) : null;
 
   let recon = '';
-  if (savings?.current_balance == null) {
+  if (bankBal == null) {
     recon = `<div class="banner info">Connect Wells Fargo in <a href="#/admin">Admin</a> (or type in the Joint Savings balance) so Scoffers can check the jars match the bank.</div>`;
   } else {
-    const diff = round2(Number(savings.current_balance) - total);
+    const diff = round2(Number(bankBal) - total);
     if (Math.abs(diff) < 0.005) {
-      recon = `<div class="banner ok">✓ Jars match Wells Fargo to the penny.</div>`;
+      recon = `<div class="banner ok">✓ Jars match Joint Savings to the penny.</div>`;
     } else if (diff > 0) {
       const looksLikeFunding = fundAmt != null && Math.abs(diff - fundAmt) < 0.005;
-      recon = `<div class="banner warn">Wells Fargo shows ${money(savings.current_balance)}; the jars hold ${money(total)}. ${money(diff)} isn't in a jar yet.
+      recon = `<div class="banner warn">Joint Savings shows ${money(bankBal)}; the jars hold ${money(total)}. ${money(diff)} isn't in a jar yet.
         <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">
           ${looksLikeFunding ? `<button class="btn gold" id="split-gap">Split ${money(diff)} across the jars</button>` : ''}
           <button class="btn ${looksLikeFunding ? '' : 'gold'}" id="sweep">Put it in Loose Change</button>
         </div></div>`;
     } else {
-      recon = `<div class="banner warn">The jars hold ${money(-diff)} more than Wells Fargo shows. ${inboxCount ? `Check the <a href="#/inbox">Inbox</a>: a withdrawal probably still needs a jar.` : 'A withdrawal probably still needs a jar.'}</div>`;
+      const small = -diff <= 25;
+      recon = `<div class="banner warn">The jars hold ${money(-diff)} more than Joint Savings shows (${money(bankBal)}). ${inboxCount ? `Check the <a href="#/inbox">Inbox</a>: a withdrawal probably still needs a jar.` : small ? 'Probably a small fee or rounding from the switch.' : 'A withdrawal probably still needs a jar.'}
+        ${small ? `<div style="margin-top:8px"><button class="btn gold" id="trim">Take ${money(-diff)} from Loose Change to match</button></div>` : ''}</div>`;
     }
   }
   const inboxBanner = inboxCount
@@ -376,7 +380,7 @@ async function renderHome() {
     </header>
     ${spending?.hasBalance ? whatsLeftCard(spending) : ''}
     <section class="card hero">
-      <div class="label">In the jars</div>
+      <div class="label">In the jars · Joint Savings …${esc(savings?.mask || '0810')}</div>
       <div class="big">${money(total)}</div>
       <div class="meta">${jars.length} jars${next ? ` · next funding ${next.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}` : ''}${linked ? ` · bank synced ${ago(savings.balance_updated_at)}` : ''}</div>
     </section>
@@ -393,10 +397,18 @@ async function renderHome() {
 
   document.getElementById('sweep')?.addEventListener('click', async () => {
     const catchAll = jars.find((j) => j.is_catch_all);
-    const diff = round2(Number(savings.current_balance) - total);
+    const diff = round2(Number(bankBal) - total);
     const { error } = await sb.from('allocations').insert({ jar_id: catchAll.id, amount: diff, kind: 'adjustment', note: 'Matched to Wells Fargo balance' });
     if (error) return fail(error);
     toast(`${money(diff)} added to ${catchAll.name}`);
+    route();
+  });
+  document.getElementById('trim')?.addEventListener('click', async () => {
+    const catchAll = jars.find((j) => j.is_catch_all);
+    const diff = round2(Number(bankBal) - total);
+    const { error } = await sb.from('allocations').insert({ jar_id: catchAll.id, amount: diff, kind: 'adjustment', note: 'Matched to Wells Fargo balance' });
+    if (error) return fail(error);
+    toast('Jars now match Joint Savings ✓');
     route();
   });
   document.getElementById('split-gap')?.addEventListener('click', async () => {
@@ -904,7 +916,7 @@ async function renderBankSection() {
     ${status.accounts.map((a) => `
       <div class="row" style="padding:6px 0">
         <span>${a.linked ? '✓' : '○'} ${esc(a.name)} …${esc(a.mask)}</span>
-        <span class="muted">${a.linked && a.current_balance != null ? money(a.kind === 'checking' ? a.available_balance ?? a.current_balance : a.current_balance) : 'not linked'}</span>
+        <span class="muted">${!a.linked ? 'not linked' : (a.available_balance ?? a.current_balance) != null ? money(a.available_balance ?? a.current_balance) : 'no balance yet'}</span>
       </div>`).join('')}
     <p class="muted small" style="margin:6px 0 10px">Last sync ${ago(item.updated_at)}. New transactions also arrive on their own.</p>
     <div class="grid2">
