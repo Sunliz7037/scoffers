@@ -179,3 +179,6 @@ label.check { display: flex; align-items: center; gap: 10px; color: var(--ink); 
 label.check input { width: 20px; height: 20px; min-height: 0; flex: none; accent-color: var(--brand); }
 .checks label.check:last-child { border-bottom: 0; }
 .tabs a { font-size: 11px; padding: 6px 2px; }
+
+.login .brand .logo { display: block; margin: 0 auto 12px; border-radius: 26px; box-shadow: var(--shadow); }
+.splash img.coin { border-radius: 18px; }

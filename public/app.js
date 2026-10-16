@@ -316,7 +316,7 @@ function renderLogin(message = '') {
   $app.innerHTML = `
     <section class="login">
       <div class="brand">
-        <div class="coin" aria-hidden="true">🪙</div>
+        <img class="logo" src="/icons/logo-256.png" alt="" width="112" height="112">
         <h1>Scoffers</h1>
         <div class="muted display" style="font-weight:500;font-style:italic">the Saunders Coffers</div>
       </div>
