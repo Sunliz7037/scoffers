@@ -103,4 +103,16 @@ assert.equal(matchPlanned({ amount: -42.1, date: '2026-12-04', name: 'NTTA', pen
 assert.deepEqual(matchPlanned({ amount: -150, date: '2026-12-19', name: 'CAMP', pending: false }, [trip], []),
   { planned_item_id: 'k', occurrence_date: '2026-12-20' });                    // right month of a recurring item
 
+// Starting from the bank's available balance: matches the bank even when the transaction list is stale.
+const wa = whatsLeft({ ...base, balance: 845.98, available: 2999.85, planned: [], txns: [
+  { id: 'pd', amount: 3033, date: '2026-11-15', pending: true, kind: 'variable_deposit' }] });
+assert.equal(wa.whatsLeft, 2999.85);
+// Unlinked jar money (pending or posted) is still set aside.
+const wb = whatsLeft({ ...base, balance: 0, available: 3600, planned: [], txns: [
+  { id: 'pj', amount: 600, date: '2026-11-15', pending: true, kind: 'jar_withdrawal', needs_review: true }] });
+assert.equal(wb.whatsLeft, 3000);
+// Planned items still come off.
+const wc = whatsLeft({ ...base, today: '2026-12-02', balance: 0, available: 1000, planned: [toll], txns: [] });
+assert.equal(wc.whatsLeft, 957.9);
+
 console.log('all what\'s-left tests passed');

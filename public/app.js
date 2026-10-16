@@ -206,6 +206,7 @@ async function loadSpending() {
   const w = whatsLeft({
     today: todayIso(),
     balance: Number(checking.current_balance || 0),
+    available: checking.available_balance,
     txns,
     planned: pl.data,
     matches: pm.data,
@@ -426,6 +427,7 @@ async function renderHome() {
       <div class="sub">the Saunders Coffers · hi, ${esc(me.display_name)}</div>
     </header>
     ${checkingHero}
+    ${spending?.linked ? `<button class="btn link" id="home-sync" style="margin:-4px 0 8px">↻ Refresh from Wells Fargo</button>` : ''}
     ${inboxBanner}
     ${spending?.hasBalance ? whatsLeftCard(spending) : `
     <section class="card">
@@ -435,6 +437,21 @@ async function renderHome() {
     <div class="row" style="margin:18px 0 10px"><h2 style="font-size:20px">Jars <span class="muted" style="font-family:Inter,sans-serif;font-size:15px;font-weight:500">${money(total)}</span></h2><a href="#/jars" class="muted small">See all</a></div>
     ${jars.slice(0, 4).map(jarCard).join('')}
   `;
+  document.getElementById('home-sync')?.addEventListener('click', (e) => refreshFromBank(e.target));
+}
+
+async function refreshFromBank(btn) {
+  btn.disabled = true;
+  btn.textContent = 'Checking Wells Fargo…';
+  try {
+    const { results } = await api('/sync', {});
+    const r = results[0] || {};
+    if (r.error) throw new Error(r.error);
+    toast(r.added ? `${r.added} new transaction${r.added === 1 ? '' : 's'}` : 'Balance updated. New transactions can take a few minutes.');
+  } catch (err) { fail(err); }
+  route();
+  // Plaid finishes checking the bank a minute or two later; look again.
+  setTimeout(() => { if ((location.hash || '#/home').startsWith('#/home')) route(); }, 90000);
 }
 
 async function renderSpending() {
@@ -941,17 +958,7 @@ async function renderBankSection() {
       <button class="btn primary" id="sync">Sync now</button>
       <button class="btn" id="reconnect">${needsLogin ? 'Sign in again' : 'Reconnect'}</button>
     </div>`;
-  el.querySelector('#sync').onclick = async (e) => {
-    e.target.disabled = true;
-    e.target.textContent = 'Syncing…';
-    try {
-      const { results } = await api('/sync', {});
-      const r = results[0] || {};
-      if (r.error) throw new Error(r.error);
-      toast(r.added ? `${r.added} new transaction${r.added === 1 ? '' : 's'}` : 'Up to date');
-    } catch (err) { fail(err); }
-    route();
-  };
+  el.querySelector('#sync').onclick = (e) => refreshFromBank(e.target);
   el.querySelector('#reconnect').onclick = () => openPlaid('update');
 }
 

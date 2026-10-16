@@ -47,12 +47,15 @@ export function occurrences(item, from, to) {
 /**
  * @param o.today        'YYYY-MM-DD'
  * @param o.balance      checking current (posted) balance; pending items are applied on top
+ * @param o.available    the bank's available balance (posted ± pending). When given, it's the starting point,
+ *                       so What's Left matches the bank even if the transaction list lags behind.
  * @param o.txns         checking transactions (recent ~60 days): { id, amount, date, pending, kind }
  * @param o.planned      planned_items (not archived)
  * @param o.matches      planned_matches: { planned_item_id, occurrence_date }
  * @param o.coverage     jar_coverage: { withdrawal_transaction_id, charge_transaction_id, amount }
  */
-export function whatsLeft({ today, balance, txns, planned, matches, coverage }) {
+export function whatsLeft({ today, balance, available, txns, planned, matches, coverage }) {
+  const useAvailable = available != null && Number.isFinite(Number(available));
   const p = periodFor(today);
   const lookback = addDays(today, -60);
 
@@ -78,7 +81,8 @@ export function whatsLeft({ today, balance, txns, planned, matches, coverage }) 
   // It's in the balance, so it's set aside here to keep What's Left untouched by jars.
   // Only transfers still open in the Inbox count (history from before Scoffers is already settled).
   const waitingItems = txns
-    .filter((t) => !t.pending && t.amount > 0 && t.kind === 'jar_withdrawal' && t.needs_review)
+    // (Pending jar transfers are already in the bank's available balance, so they're held too.)
+    .filter((t) => (useAvailable || !t.pending) && t.amount > 0 && t.kind === 'jar_withdrawal' && t.needs_review)
     .map((t) => ({ id: t.id, remaining: r2(t.amount - (coveredByWithdrawal[t.id] || 0)) }))
     .filter((w) => w.remaining > 0.004);
   const waiting = r2(waitingItems.reduce((s, w) => s + w.remaining, 0));
@@ -100,7 +104,8 @@ export function whatsLeft({ today, balance, txns, planned, matches, coverage }) 
   const plannedHeld = r2(plannedList.filter((x) => !x.paid).reduce((s, x) => s + x.amount, 0));
   const nextCommitted = r2(nextList.filter((x) => !x.paid).reduce((s, x) => s + x.amount, 0));
 
-  const value = r2(Number(balance) + pendingIn - pendingOut - plannedHeld - waiting);
+  const start = useAvailable ? Number(available) : Number(balance) + pendingIn - pendingOut;
+  const value = r2(start - plannedHeld - waiting);
   return {
     period: p,
     whatsLeft: value,
