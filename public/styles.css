@@ -182,3 +182,5 @@ label.check input { width: 20px; height: 20px; min-height: 0; flex: none; accent
 
 .login .brand .logo { display: block; margin: 0 auto 12px; border-radius: 26px; box-shadow: var(--shadow); }
 .splash img.coin { border-radius: 18px; }
+.legend .lg span { white-space: nowrap; }
+.actions .btn { white-space: nowrap; padding-left: 8px; padding-right: 8px; }

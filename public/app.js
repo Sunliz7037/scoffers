@@ -250,7 +250,7 @@ function whatsLeftCard(s) {
     ['spent', 'Spent', w.spent],
     ['pending', 'Pending', w.pending],
     ['planned', 'Planned', w.planned],
-    ...(w.waiting > 0 ? [['jar', 'Jar money to link', w.waiting]] : []),
+    ...(w.waiting > 0 ? [['jar', 'Jar money', w.waiting]] : []),
     ['left', 'Left', w.left],
   ];
   return `
