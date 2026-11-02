@@ -743,11 +743,50 @@ async function renderJars() {
   const [jars, accounts, rule, inboxCount] = await Promise.all([loadJars(), loadAccounts(), loadFundingRule(), countInbox()]);
   const summary = jarsSummary(jars, accounts, rule, inboxCount);
   $app.innerHTML = `
-    <div class="page-title"><h1>Jars</h1></div>
+    <div class="page-title"><h1>Jars</h1><button class="btn" id="reorder">↕ Reorder</button></div>
     ${summary.html}
-    ${jars.map(jarCard).join('')}
+    ${jars.map((j, i) => (i === 4 ? '<p class="muted small" style="margin:14px 0 8px">Not on Home</p>' : '') + jarCard(j)).join('')}
   `;
   summary.wire();
+  document.getElementById('reorder').onclick = () => renderReorder(jars);
+}
+
+// Move jars up and down; the top 4 are the ones on Home.
+function renderReorder(jars) {
+  const order = [...jars];
+  const draw = () => {
+    $app.innerHTML = `
+      <div class="page-title"><h1>Reorder jars</h1></div>
+      <p class="muted small" style="margin:-6px 0 12px">The top 4 show on Home.</p>
+      <section class="card reorder">
+        ${order.map((j, i) => `
+          ${i === 4 ? '<div class="reorder-cut">Below here: Jars page only</div>' : ''}
+          <div class="reorder-row">
+            <span class="emoji" aria-hidden="true">${esc(j.emoji || '🫙')}</span>
+            <span class="name"><span class="txt">${esc(j.name)}</span>${i < 4 ? '<span class="pill good">Home</span>' : ''}</span>
+            <button class="btn" data-up="${i}" ${i === 0 ? 'disabled' : ''} aria-label="Move ${esc(j.name)} up">↑</button>
+            <button class="btn" data-down="${i}" ${i === order.length - 1 ? 'disabled' : ''} aria-label="Move ${esc(j.name)} down">↓</button>
+          </div>`).join('')}
+      </section>
+      <div class="grid2">
+        <button class="btn" id="r-cancel">Cancel</button>
+        <button class="btn primary" id="r-save">Save order</button>
+      </div>`;
+    const swap = (a, b) => { [order[a], order[b]] = [order[b], order[a]]; draw(); };
+    $app.querySelectorAll('[data-up]').forEach((b) => (b.onclick = () => swap(+b.dataset.up, +b.dataset.up - 1)));
+    $app.querySelectorAll('[data-down]').forEach((b) => (b.onclick = () => swap(+b.dataset.down, +b.dataset.down + 1)));
+    document.getElementById('r-cancel').onclick = () => route();
+    document.getElementById('r-save').onclick = async (e) => {
+      e.target.disabled = true;
+      const changed = order.map((j, i) => ({ j, i })).filter(({ j, i }) => j.sort_order !== i);
+      const results = await Promise.all(changed.map(({ j, i }) => sb.from('jars').update({ sort_order: i }).eq('id', j.id)));
+      const err = results.find((r) => r.error);
+      if (err) return fail(err.error);
+      toast('Order saved');
+      route();
+    };
+  };
+  draw();
 }
 
 async function renderJar(id) {

@@ -187,3 +187,10 @@ label.check input { width: 20px; height: 20px; min-height: 0; flex: none; accent
 .bank-item { padding: 4px 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
 .bank-item .btn.link { padding: 6px 0 0; }
 .history button.hold-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; }
+.reorder-row { display: grid; grid-template-columns: 36px 1fr 44px 44px; gap: 8px; align-items: center; padding: 6px 0; }
+.reorder-row .emoji { font-size: 22px; text-align: center; }
+.reorder-row .name { font-weight: 600; min-width: 0; display: flex; align-items: center; gap: 6px; }
+.reorder-row .name .txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reorder-row .name .pill { flex: none; }
+.reorder-row .btn { padding: 0; min-width: 44px; }
+.reorder-cut { border-top: 2px dashed var(--line); margin: 8px 0 4px; padding-top: 6px; font-size: 12px; color: var(--ink-2); }
