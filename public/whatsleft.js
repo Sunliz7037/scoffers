@@ -150,3 +150,30 @@ export function matchPlanned(txn, planned, matches) {
   cands.sort((a, b) => a.score - b.score);
   return { planned_item_id: cands[0].item.id, occurrence_date: cands[0].date };
 }
+
+/**
+ * Progress on a savings goal held at another bank (the emergency fund).
+ * Money that's about to come out (holds) doesn't count toward the goal yet.
+ * @param o.balance  the bank's balance (available, else current)
+ * @param o.holds    upcoming withdrawals: { amount, due_date }
+ * @param o.goal     goal amount (optional)
+ * @param o.goalDate 'YYYY-MM-DD' (optional)
+ * @param o.today    'YYYY-MM-DD'
+ */
+export function fundProgress({ balance, holds = [], goal, goalDate, today }) {
+  const bal = r2(Number(balance) || 0);
+  const upcoming = r2(holds.reduce((s, h) => s + Number(h.amount), 0));
+  const actual = r2(bal - upcoming);
+  const g = goal != null && Number(goal) > 0 ? Number(goal) : null;
+  const toGo = g == null ? null : r2(Math.max(0, g - actual));
+  const pct = g == null ? null : Math.max(0, Math.min(100, (actual / g) * 100));
+  const overdue = holds.filter((h) => h.due_date && h.due_date < today).length;
+  let perMonth = null;
+  if (g != null && goalDate && toGo > 0) {
+    const [ty, tm, td] = today.split('-').map(Number);
+    const [gy, gm, gd] = goalDate.split('-').map(Number);
+    const months = Math.max(1, (gy - ty) * 12 + (gm - tm) + (gd >= td ? 0 : -1) + 1);
+    perMonth = goalDate < today ? toGo : r2(toGo / months);
+  }
+  return { balance: bal, upcoming, actual, goal: g, toGo, pct, reached: g != null && actual >= g, overdue, perMonth };
+}

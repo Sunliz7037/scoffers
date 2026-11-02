@@ -184,3 +184,6 @@ label.check input { width: 20px; height: 20px; min-height: 0; flex: none; accent
 .splash img.coin { border-radius: 18px; }
 .legend .lg span { white-space: nowrap; }
 .actions .btn { white-space: nowrap; padding-left: 8px; padding-right: 8px; }
+.bank-item { padding: 4px 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 10px; }
+.bank-item .btn.link { padding: 6px 0 0; }
+.history button.hold-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; }

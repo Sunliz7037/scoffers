@@ -1,6 +1,6 @@
 import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 import { SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, JAR_DEPOSIT_DAYS } from './config.js';
-import { whatsLeft, addDays } from './whatsleft.js';
+import { whatsLeft, addDays, fundProgress } from './whatsleft.js';
 
 const sb = createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY, {
   auth: { persistSession: true, autoRefreshToken: true },
@@ -106,10 +106,10 @@ function plaidHandlers(mode) {
   return {
     onSuccess: async (public_token, metadata) => {
       try {
-        toast(mode === 'update' ? 'Reconnected, syncing…' : 'Connected, pulling transactions…');
+        toast(mode === 'update' ? 'Reconnected, syncing…' : mode === 'balance' ? 'Connected, getting the balance…' : 'Connected, pulling transactions…');
         if (mode === 'update') await api('/sync', {});
         else {
-          const r = await api('/exchange', { public_token, institution: metadata?.institution?.name });
+          const r = await api('/exchange', { public_token, mode, institution: metadata?.institution?.name });
           toast(r.matched?.length ? `Linked ${r.matched.join(' and ')}` : 'Connected, but no matching accounts');
         }
       } catch (e) { fail(e); }
@@ -121,10 +121,10 @@ function plaidHandlers(mode) {
   };
 }
 
-async function openPlaid(mode = 'new') {
+async function openPlaid(mode = 'new', itemId = null) {
   try {
     await loadPlaidScript();
-    const { link_token } = await api('/link-token', { mode });
+    const { link_token } = await api('/link-token', { mode, itemId });
     // Wells Fargo signs in on its own site and sends you back to /oauth; keep the token for that trip.
     try { localStorage.setItem('scoffers_link', JSON.stringify({ token: link_token, mode })); } catch {}
     window.Plaid.create({ token: link_token, ...plaidHandlers(mode) }).open();
@@ -174,6 +174,18 @@ async function loadAccounts() {
   const { data, error } = await sb.from('accounts').select('*');
   if (error) throw error;
   return data;
+}
+async function loadHolds() {
+  const { data, error } = await sb.from('account_holds').select('*').order('due_date', { ascending: true, nullsFirst: false });
+  if (error) return []; // before the database update, there are none
+  return data;
+}
+async function loadFunds() {
+  const [accounts, holds] = await Promise.all([loadAccounts(), loadHolds()]);
+  return accounts.filter((a) => a.kind === 'balance_only').map((a) => {
+    const h = holds.filter((x) => x.account_id === a.id);
+    return { account: a, holds: h, p: fundProgress({ balance: a.available_balance ?? a.current_balance, holds: h, goal: a.goal_amount, goalDate: a.goal_date, today: todayIso() }) };
+  });
 }
 async function loadFundingRule() {
   const { data, error } = await sb.from('transfer_rules').select('*').eq('action', 'split_jars').eq('active', true).maybeSingle();
@@ -406,7 +418,7 @@ function jarsSummary(jars, accounts, rule, inboxCount) {
 }
 
 async function renderHome() {
-  const [jars, inboxCount, spending] = await Promise.all([loadJars(), countInbox(), loadSpending()]);
+  const [jars, inboxCount, spending, funds] = await Promise.all([loadJars(), countInbox(), loadSpending(), loadFunds()]);
   const total = round2(jars.reduce((s, j) => s + j.balance, 0));
   const inboxBanner = inboxCount
     ? `<a class="banner info" href="#/inbox" style="display:block;text-decoration:none">📬 ${inboxCount} ${inboxCount === 1 ? 'thing needs' : 'things need'} a look. Tap to sort.</a>`
@@ -427,13 +439,14 @@ async function renderHome() {
       <div class="sub">the Saunders Coffers · hi, ${esc(me.display_name)}</div>
     </header>
     ${checkingHero}
-    ${spending?.linked ? `<button class="btn link" id="home-sync" style="margin:-4px 0 8px">↻ Refresh from Wells Fargo</button>` : ''}
+    ${spending?.linked ? `<button class="btn link" id="home-sync" style="margin:-4px 0 8px">↻ Refresh from ${funds.length ? 'the banks' : 'Wells Fargo'}</button>` : ''}
     ${inboxBanner}
     ${spending?.hasBalance ? whatsLeftCard(spending) : `
     <section class="card">
       <div class="row"><h3 style="font-size:18px">What's Left</h3><span class="pill plain">Needs the bank</span></div>
       <p class="muted small" style="margin:6px 0 0">Your variable-spend number for the pay period shows up here once Wells Fargo is connected in <a href="#/admin">Admin</a>.</p>
     </section>`}
+    ${funds.map(fundCard).join('')}
     <div class="row" style="margin:18px 0 10px"><h2 style="font-size:20px">Jars <span class="muted" style="font-family:Inter,sans-serif;font-size:15px;font-weight:500">${money(total)}</span></h2><a href="#/jars" class="muted small">See all</a></div>
     ${jars.slice(0, 4).map(jarCard).join('')}
   `;
@@ -442,12 +455,14 @@ async function renderHome() {
 
 async function refreshFromBank(btn) {
   btn.disabled = true;
-  btn.textContent = 'Checking Wells Fargo…';
+  btn.textContent = 'Checking the bank…';
   try {
     const { results } = await api('/sync', {});
-    const r = results[0] || {};
-    if (r.error) throw new Error(r.error);
-    toast(r.added ? `${r.added} new transaction${r.added === 1 ? '' : 's'}` : 'Balance updated. New transactions can take a few minutes.');
+    const errs = results.filter((r) => r.error);
+    if (errs.length && errs.length === results.length) throw new Error(errs[0].error);
+    const added = results.reduce((s, r) => s + (r.added || 0), 0);
+    if (errs.length) toast(`${errs.map((r) => r.institution || 'A bank').join(', ')} needs attention. See Admin.`);
+    else toast(added ? `${added} new transaction${added === 1 ? '' : 's'}` : 'Balance updated. New transactions can take a few minutes.');
   } catch (err) { fail(err); }
   route();
   // Plaid finishes checking the bank a minute or two later; look again.
@@ -868,7 +883,7 @@ async function renderAdmin() {
     ${jars.map((j) => jarEditor(j)).join('')}
     <button class="btn block" id="add-jar" style="margin-bottom:24px">＋ New jar</button>
 
-    <h2 style="font-size:20px;margin:0 0 10px">Wells Fargo</h2>
+    <h2 style="font-size:20px;margin:0 0 10px">Banks</h2>
     <section class="card" id="bank"><p class="muted small" style="margin:0">Checking the bank connection…</p></section>
 
     ${savings?.plaid_account_id ? '' : `
@@ -933,33 +948,181 @@ async function renderBankSection() {
     el.innerHTML = `<p class="small" style="margin:0">${esc(e.message)}</p>`;
     return;
   }
-  const item = status.items[0];
   const isPhoneApp = window.matchMedia('(display-mode: standalone)').matches;
-  if (!item) {
+  const tip = isPhoneApp ? `<div class="banner info" style="margin-bottom:10px">Tip: connect from a computer browser. Bank sign-ins can get lost inside home-screen apps.</div>` : '';
+  if (!status.items.length) {
     el.innerHTML = `
       <p class="muted small" style="margin:0 0 10px">Read-only connection through Plaid. Scoffers can see balances and transactions; it can't move money.</p>
-      ${isPhoneApp ? `<div class="banner info" style="margin-bottom:10px">Tip: connect from a computer browser. Bank sign-ins can get lost inside home-screen apps.</div>` : ''}
+      ${tip}
       <button class="btn primary block" id="connect">Connect Wells Fargo</button>`;
     el.querySelector('#connect').onclick = () => openPlaid('new');
     return;
   }
-  const needsLogin = item.status === 'login_required';
-  const errored = item.status && item.status.startsWith('error');
-  el.innerHTML = `
-    ${needsLogin ? `<div class="banner warn">Wells Fargo needs you to sign in again.</div>` : ''}
-    ${errored ? `<div class="banner warn">Last sync hit a problem: ${esc(item.status.replace(/^error: /, ''))}</div>` : ''}
-    ${status.accounts.map((a) => `
+  const first = status.items[0];
+  // Accounts from before banks were tracked separately belong to the first (Wells Fargo) connection.
+  const accountsFor = (item) => status.accounts.filter((a) => a.item_id === item.id || (!a.item_id && item.id === first.id && a.kind !== 'balance_only'));
+  const acctRow = (a) => `
       <div class="row" style="padding:6px 0">
-        <span>${a.linked ? '✓' : '○'} ${esc(a.name)} …${esc(a.mask)}</span>
+        <span>${a.linked ? '✓' : '○'} ${esc(a.name)} …${esc(a.mask)}${a.kind === 'balance_only' ? ' <span class="pill plain">balance only</span>' : ''}</span>
         <span class="muted">${!a.linked ? 'not linked' : (a.available_balance ?? a.current_balance) != null ? money(a.available_balance ?? a.current_balance) : 'no balance yet'}</span>
-      </div>`).join('')}
-    <p class="muted small" style="margin:6px 0 10px">Last sync ${ago(item.updated_at)}. New transactions also arrive on their own.</p>
-    <div class="grid2">
-      <button class="btn primary" id="sync">Sync now</button>
-      <button class="btn" id="reconnect">${needsLogin ? 'Sign in again' : 'Reconnect'}</button>
-    </div>`;
+      </div>`;
+  const itemBlock = (item) => {
+    const name = item.institution || 'Bank';
+    const needsLogin = item.status === 'login_required';
+    const errored = item.status && item.status.startsWith('error');
+    return `
+      <div class="bank-item">
+        <div class="row"><strong>${esc(name)}</strong><span class="muted small">synced ${ago(item.updated_at)}</span></div>
+        ${needsLogin ? `<div class="banner warn" style="margin:8px 0">${esc(name)} needs you to sign in again.</div>` : ''}
+        ${errored ? `<div class="banner warn" style="margin:8px 0">Last sync hit a problem: ${esc(item.status.replace(/^error: /, ''))}</div>` : ''}
+        ${accountsFor(item).map(acctRow).join('')}
+        <button class="btn ${needsLogin ? 'gold' : 'link'} reconnect" data-item="${item.id}">${needsLogin ? 'Sign in again' : `Reconnect ${esc(name)}`}</button>
+      </div>`;
+  };
+  el.innerHTML = `
+    ${status.items.map(itemBlock).join('')}
+    <p class="muted small" style="margin:6px 0 10px">New transactions also arrive on their own.</p>
+    <button class="btn primary block" id="sync">Sync now</button>
+    ${tip}
+    <button class="btn block" id="add-balance" style="margin-top:8px">+ Add a savings account at another bank</button>
+    <p class="muted small" style="margin:6px 0 0">Balance only, for things like a high-yield savings account. It never touches the jars or What's Left. Uses 1 of the 10 free bank connections.</p>`;
   el.querySelector('#sync').onclick = (e) => refreshFromBank(e.target);
-  el.querySelector('#reconnect').onclick = () => openPlaid('update');
+  el.querySelectorAll('.reconnect').forEach((b) => (b.onclick = () => openPlaid('update', b.dataset.item)));
+  el.querySelector('#add-balance').onclick = () => openPlaid('balance');
+}
+
+/* ---------- savings at other banks (emergency fund) ---------- */
+
+const fundTitle = (a) => a.goal_name || 'Emergency Fund';
+const fundBank = (a) => `${a.institution ? `${a.institution} ` : ''}…${a.mask}`;
+
+function fundCard({ account: a, holds, p }) {
+  const pill = p.overdue
+    ? { cls: 'warn', text: `Check ${p.overdue} withdrawal${p.overdue === 1 ? '' : 's'}` }
+    : p.reached ? { cls: 'good', text: 'Goal reached 🎉' }
+    : p.upcoming > 0 ? { cls: 'gold', text: `−${money(p.upcoming)} coming out` }
+    : p.goal == null ? { cls: 'plain', text: 'Set a goal' } : null;
+  return `
+    <a class="card jar" href="#/fund/${a.id}">
+      <div class="top">
+        <div class="emoji" aria-hidden="true">🛟</div>
+        <div class="name">${esc(fundTitle(a))}</div>
+        <div class="bal">${money(p.actual)}</div>
+      </div>
+      ${p.pct != null ? `<div class="bar" aria-hidden="true"><span style="width:${p.pct.toFixed(1)}%"></span></div>` : ''}
+      <div class="status">
+        <span class="muted">${p.goal != null ? (p.reached ? `of ${money(p.goal)}` : `${money(p.toGo)} to go of ${money(p.goal)}`) : fundBank(a)}</span>
+        ${pill ? `<span class="pill ${pill.cls}">${esc(pill.text)}</span>` : ''}
+      </div>
+      ${p.upcoming > 0 ? `<div class="muted small" style="margin-top:6px">${esc(fundBank(a))} shows ${money(p.balance)}</div>` : ''}
+    </a>`;
+}
+
+async function renderFund(id) {
+  const funds = await loadFunds();
+  const f = funds.find((x) => x.account.id === id);
+  if (!f) {
+    $app.innerHTML = `<a class="back" href="#/home">‹ Home</a><div class="card">That account isn't connected anymore.</div>`;
+    return;
+  }
+  const { account: a, holds, p } = f;
+  const t = todayIso();
+  const holdRow = (h) => {
+    const overdue = h.due_date && h.due_date < t;
+    return `
+      <button class="item hold-row" data-id="${h.id}">
+        <div style="min-width:0;text-align:left">
+          <div>${esc(h.name)} ${overdue ? '<span class="pill warn">Past due</span>' : ''}</div>
+          <div class="muted small">${h.due_date ? `Coming out ${fmtDay(h.due_date)}` : 'Date not set'}</div>
+        </div>
+        <span class="amt-out">−${money(h.amount)}</span>
+      </button>`;
+  };
+  $app.innerHTML = `
+    <a class="back" href="#/home">‹ Home</a>
+    <section class="card hero">
+      <div class="label">🛟 ${esc(fundTitle(a))} · ${esc(fundBank(a))}</div>
+      <div class="big">${money(p.actual)}</div>
+      <div class="meta">${p.goal != null ? (p.reached ? `Goal of ${money(p.goal)} reached 🎉` : `${money(p.toGo)} to go of ${money(p.goal)}${a.goal_date ? ` by ${fmtDay(a.goal_date, { month: 'short', year: 'numeric' })}` : ''}`) : 'No goal set yet'}${a.balance_updated_at ? ` · synced ${ago(a.balance_updated_at)}` : ''}</div>
+      ${p.pct != null ? `<div class="bar" aria-hidden="true" style="background:rgba(255,255,255,.18)"><span style="width:${p.pct.toFixed(1)}%;background:var(--gold)"></span></div>` : ''}
+    </section>
+    <section class="card">
+      <div class="row" style="padding:4px 0"><span>${esc(a.institution || 'Bank')} balance</span><b>${money(p.balance)}</b></div>
+      <div class="row" style="padding:4px 0"><span>Upcoming withdrawals</span><b>${p.upcoming > 0 ? '−' : ''}${money(p.upcoming)}</b></div>
+      <div class="row" style="padding:8px 0 4px;border-top:1px solid var(--line);margin-top:4px"><strong>Counts toward the goal</strong><strong>${money(p.actual)}</strong></div>
+      ${p.perMonth ? `<p class="muted small" style="margin:8px 0 0">About ${money(p.perMonth)} a month to hit it on time.</p>` : ''}
+    </section>
+    ${p.overdue ? `<div class="banner warn">A withdrawal's date has passed. Once it's out of ${esc(a.institution || 'the account')}, tap it and remove it so it isn't counted twice.</div>` : ''}
+    <div class="row" style="margin:18px 0 10px"><h2 style="font-size:20px">Coming out</h2><button class="btn" id="add-hold">+ Add</button></div>
+    <section class="card history">
+      ${holds.length ? holds.map(holdRow).join('') : `<p class="muted" style="margin:0">Nothing planned. Add a withdrawal you know is coming so the goal shows where you'll really be.</p>`}
+    </section>
+    <form class="card" id="goal-form">
+      <h3 style="font-size:18px;margin-bottom:12px">Goal</h3>
+      <div class="field"><label>Name</label><input name="goal_name" value="${esc(fundTitle(a))}"></div>
+      <div class="grid2 field">
+        <div><label>Goal amount</label><input name="goal_amount" inputmode="decimal" value="${a.goal_amount ?? ''}" placeholder="20000"></div>
+        <div><label>By (optional)</label><input name="goal_date" type="date" value="${a.goal_date ?? ''}"></div>
+      </div>
+      <button class="btn primary block" type="submit">Save goal</button>
+    </form>`;
+  document.getElementById('add-hold').onclick = () => holdSheet(a);
+  document.querySelectorAll('.hold-row').forEach((b) => (b.onclick = () => holdSheet(a, holds.find((h) => h.id === b.dataset.id))));
+  document.getElementById('goal-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const amt = String(fd.get('goal_amount') || '').replace(/[$,\s]/g, '');
+    if (amt && !(Number(amt) > 0)) return toast('Goal amount should be a number');
+    const { error } = await sb.from('accounts').update({
+      goal_name: String(fd.get('goal_name') || '').trim() || null,
+      goal_amount: amt ? round2(amt) : null,
+      goal_date: fd.get('goal_date') || null,
+    }).eq('id', a.id);
+    if (error) return fail(error);
+    toast('Goal saved');
+    route();
+  };
+}
+
+function holdSheet(a, h = null) {
+  $sheet.innerHTML = `
+    <form class="inner">
+      <h2>${h ? 'Upcoming withdrawal' : 'Add upcoming withdrawal'}</h2>
+      <div class="field"><label>What's it for</label><input name="name" required value="${esc(h?.name || '')}" placeholder="New roof deposit"></div>
+      <div class="grid2 field">
+        <div><label>Amount</label><input name="amount" inputmode="decimal" required value="${h ? h.amount : ''}"></div>
+        <div><label>Coming out on</label><input name="due_date" type="date" value="${h?.due_date || ''}"></div>
+      </div>
+      ${h ? `<p class="muted small" style="margin:0 0 10px">Once this money has left ${esc(a.institution || 'the account')}, remove it here so it isn't counted twice.</p>` : ''}
+      <div class="btns">
+        ${h ? `<button class="btn" type="button" id="h-remove">It's out, remove</button>` : `<button class="btn" type="button" id="h-cancel">Cancel</button>`}
+        <button class="btn primary" type="submit">Save</button>
+      </div>
+    </form>`;
+  $sheet.showModal();
+  const form = $sheet.querySelector('form');
+  form.querySelector('#h-cancel')?.addEventListener('click', () => $sheet.close());
+  form.querySelector('#h-remove')?.addEventListener('click', async () => {
+    const { error } = await sb.from('account_holds').delete().eq('id', h.id);
+    if (error) return fail(error);
+    $sheet.close();
+    toast('Removed');
+    route();
+  });
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const fd = new FormData(form);
+    const amount = Number(String(fd.get('amount')).replace(/[$,\s]/g, ''));
+    if (!(amount > 0)) return toast('Amount should be more than $0');
+    const row = { name: String(fd.get('name')).trim(), amount: round2(amount), due_date: fd.get('due_date') || null };
+    const { error } = h
+      ? await sb.from('account_holds').update(row).eq('id', h.id)
+      : await sb.from('account_holds').insert({ ...row, account_id: a.id });
+    if (error) return fail(error);
+    $sheet.close();
+    toast(h ? 'Saved' : `${money(row.amount)} set aside`);
+    route();
+  };
 }
 
 function jarEditor(j) {
@@ -1109,11 +1272,12 @@ async function route() {
     badge.hidden = !n;
   }).catch(() => {});
   const [, page, id] = (location.hash || '#/home').split('/');
-  const tab = page === 'jar' ? 'jars' : page || 'home';
+  const tab = page === 'jar' ? 'jars' : page === 'fund' ? 'home' : page || 'home';
   $tabs.querySelectorAll('a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
   try {
     if (page === 'jars') await renderJars();
     else if (page === 'jar' && id) await renderJar(id);
+    else if (page === 'fund' && id) await renderFund(id);
     else if (page === 'admin') await renderAdmin();
     else if (page === 'inbox') await renderInbox();
     else if (page === 'spending') await renderSpending();

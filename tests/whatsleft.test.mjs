@@ -116,3 +116,18 @@ const wc = whatsLeft({ ...base, today: '2026-12-02', balance: 0, available: 1000
 assert.equal(wc.whatsLeft, 957.9);
 
 console.log('all what\'s-left tests passed');
+
+// Emergency fund at another bank: upcoming withdrawals come off before progress.
+import { fundProgress } from '../public/whatsleft.js';
+const f = fundProgress({ balance: 12000, holds: [{ amount: 2500, due_date: '2026-11-20' }], goal: 20000, goalDate: '2027-04-30', today: '2026-11-02' });
+assert.equal(f.actual, 9500);
+assert.equal(f.upcoming, 2500);
+assert.equal(f.toGo, 10500);
+assert.equal(f.pct, 47.5);
+assert.equal(f.overdue, 0);
+assert.equal(f.perMonth, 1750); // Nov through Apr = 6 months
+assert.equal(fundProgress({ balance: 12000, holds: [{ amount: 2500, due_date: '2026-11-01' }], goal: 20000, today: '2026-11-02' }).overdue, 1);
+const nf = fundProgress({ balance: 500, holds: [], today: '2026-11-02' });
+assert.equal(nf.goal, null); assert.equal(nf.pct, null); assert.equal(nf.actual, 500);
+assert.equal(fundProgress({ balance: 21000, holds: [], goal: 20000, today: '2026-11-02' }).reached, true);
+console.log('fund progress tests passed');
