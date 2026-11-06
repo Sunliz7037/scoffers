@@ -451,6 +451,28 @@ async function renderHome() {
     ${jars.slice(0, 4).map(jarCard).join('')}
   `;
   document.getElementById('home-sync')?.addEventListener('click', (e) => refreshFromBank(e.target));
+  autoSync(spending?.checking);
+}
+
+// The server can fall asleep when nobody's using the app, so its every-4-hours sync may not run.
+// Opening Scoffers checks the banks if the last update is over an hour old.
+let autoSyncing = false, autoSyncTried = 0;
+async function autoSync(checking) {
+  if (autoSyncing || !checking?.plaid_account_id || Date.now() - autoSyncTried < 10 * 60 * 1000) return;
+  const last = checking.balance_updated_at ? new Date(checking.balance_updated_at) : null;
+  if (last && Date.now() - last < 60 * 60 * 1000) return;
+  autoSyncing = true;
+  autoSyncTried = Date.now();
+  try {
+    const { results } = await api('/sync', {});
+    const stuck = results.filter((r) => r.error);
+    if (stuck.length) toast(`${stuck.map((r) => r.institution || 'A bank').join(' and ')} needs you to sign in again. Admin → Banks.`);
+    if ((location.hash || '#/home').startsWith('#/home')) route();
+  } catch (e) {
+    console.warn('auto sync', e.message);
+  } finally {
+    autoSyncing = false;
+  }
 }
 
 async function refreshFromBank(btn) {
