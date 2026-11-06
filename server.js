@@ -20,7 +20,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/healthz', (req, res) => res.json({ ok: true }));
+app.get('/healthz', (req, res) => res.json({ ok: true, version: '2026-11-06-balance-only-no-live-check' }));
 
 app.use('/api/plaid', bankRouter());
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
